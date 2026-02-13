@@ -78,9 +78,9 @@ def run_video_sae_training(
 ):
     metadata = load_activation_metadata(activation_dir)
     activation_dim = metadata["d_model"]
-    layer = metadata["layer"]
     model_name = metadata["model_name"]
-    submodule_name = f"resid_post_layer_{layer}"
+    layer = metadata.get("layer", metadata.get("hook_module", "unknown"))
+    submodule_name = metadata.get("submodule_name", f"resid_post_layer_{layer}")
 
     sae_batch_size = demo_config.LLM_CONFIG[model_name].sae_batch_size
     steps = compute_training_steps(num_tokens, sae_batch_size)

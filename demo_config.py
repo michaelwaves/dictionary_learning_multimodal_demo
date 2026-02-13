@@ -64,7 +64,9 @@ print(f"NOTE: Training on {num_tokens} tokens")
 
 eval_num_inputs = 200
 random_seeds = [0]
-dictionary_widths = [2**14, 2**16]
+
+dictionary_widths = [512 * 8, 512 * 16]
+# dictionary_widths = [2**14, 2**16]
 # dictionary_widths = [2**14]
 
 WARMUP_STEPS = 1000
@@ -76,8 +78,20 @@ max_activation_norm_multiple = 10
 
 learning_rates = [5e-5]
 
+SPARSITY_PENALTIES = SparsityPenalties(
+    standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
+    standard_new=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
+    p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
+    gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
+)
 
-wandb_project = "qwen-8b-sweep"
+TARGET_L0s = [10, 20]
+
+# TARGET_L0s = [80, 160]
+# TARGET_L0s = [20, 40, 80, 160, 320, 640]
+
+
+wandb_project = "lightrix-2b-sweep"
 
 LLM_CONFIG = {
     "EleutherAI/pythia-70m-deduped": LLMConfig(
@@ -104,18 +118,10 @@ LLM_CONFIG = {
     "Qwen/Qwen3-VL-8B-Instruct": LLMConfig(
         llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
     ),
+    "Lightricks/LTX-Video": LLMConfig(
+        llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
+    )
 }
-
-SPARSITY_PENALTIES = SparsityPenalties(
-    standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
-    standard_new=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
-    p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
-    gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
-)
-
-
-TARGET_L0s = [80, 160]
-# TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 
 @dataclass
