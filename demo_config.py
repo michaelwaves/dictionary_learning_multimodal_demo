@@ -1,4 +1,5 @@
 from dataclasses import dataclass, asdict, field
+from datetime import datetime
 from typing import Optional, Type, Any
 from enum import Enum
 import torch as t
@@ -91,7 +92,7 @@ TARGET_L0s = [10, 20]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 
-wandb_project = "lightrix-2b-sweep"
+wandb_project = f"lightrix-2b-sweep-{datetime.now().strftime("%d-%m-%y_%H-%M-%S")}"
 
 LLM_CONFIG = {
     "EleutherAI/pythia-70m-deduped": LLMConfig(

@@ -8,6 +8,8 @@ from gather_ltx_activations import (
     preprocess_frames,
 )
 from video_utils import read_video_pyav, scan_video_directory
+from torchvision.utils import save_image
+
 
 LAYERS_TO_PROBE = [
     "encoder.down_blocks.0",
@@ -16,6 +18,8 @@ LAYERS_TO_PROBE = [
     "encoder.down_blocks.1.resnets.2",
     "encoder.down_blocks.2.resnets.2",
     "encoder.mid_block",
+    "encoder.norm_out",
+    "encoder.conv_out"
 ]
 
 vae = load_vae("Lightricks/LTX-Video", "cuda", enable_tiling=False)
@@ -24,11 +28,24 @@ vae = load_vae("Lightricks/LTX-Video", "cuda", enable_tiling=False)
 video_dir = "/mnt/nw/home/m.yu/repos/multimodal_sae/videos"
 video_path = scan_video_directory(video_dir)[0]
 frames = read_video_pyav(video_path, num_frames=25)
+
 video_tensor = preprocess_frames(frames, height=256, width=256, device="cuda")
 
 # Forward pass with hooks on all layers at once
 with torch.no_grad(), multi_module_hooks(vae, LAYERS_TO_PROBE) as captured:
     vae.encode(video_tensor)
+
+
+z = vae.encode(video_tensor).latent_dist.mean
+recon = vae.decode(z).sample
+frame = 0  # maybe sample multiple frames cuz they compress temporal
+# is there pixel normalization -1 to 1 ? check if their vae has a preprocessor
+# train single frame sae vs temporal sae (multi frame, 2 seconds)
+# get the temporal for free?????
+original_frame = (video_tensor[0, :, frame]+1)/2
+recon_frame = (recon[0, :, frame]+1)/2
+save_image([original_frame, recon_frame], "recon_check_2.png")
+
 
 # SVD analysis per layer
 for path in LAYERS_TO_PROBE:
@@ -40,3 +57,6 @@ for path in LAYERS_TO_PROBE:
     for k in [1, 5, 10, 20, 50]:
         if k <= len(cumvar):
             print(f"  top {k:>3d} SVs: {cumvar[k-1]:.4%}")
+
+
+breakpoint()
