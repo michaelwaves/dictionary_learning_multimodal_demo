@@ -23,19 +23,24 @@ def load_vae(model_name: str, device: str, enable_tiling: bool):
 
 
 vae = load_vae("Lightricks/LTX-Video-0.9.5", "cuda", enable_tiling=False)
+print("Loaded vae")
 video = load_video("sample_videos/jam.mp4")
+print("Loaded video")
 video_processor = VideoProcessor()
+print("processing video tensor")
 video_tensor = video_processor.preprocess_video(video, 256, 256)
+breakpoint()
 
-z = vae.encode(video_tensor, return_dict=True)
-recon = None
-if isinstance(z, AutoencoderKLOutput):
-    z = z.latent_dist.mean
-    recon = vae.decode(z)
-    if isinstance(recon, DecoderOutput):
-        recon = recon.sample
-if recon is None:
-    raise ValueError("recon is none")
+with torch.inference_mode():
+    z = vae.encode(video_tensor, return_dict=True)
+    recon = None
+    if isinstance(z, AutoencoderKLOutput):
+        z = z.latent_dist.mean
+        recon = vae.decode(z)
+        if isinstance(recon, DecoderOutput):
+            recon = recon.sample
+    if recon is None:
+        raise ValueError("recon is none")
 
 frame = 1000
 original_frame = (video_tensor[0, :, frame]+1)/2

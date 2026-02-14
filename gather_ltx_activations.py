@@ -50,7 +50,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from video_utils import read_video_pyav, scan_video_directory
+from video_utils import read_consecutive_frames, read_video_pyav, scan_video_directory
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -252,10 +252,17 @@ class ProgressTracker:
 class FramePrefetcher:
     """Prefetches video frames in background threads while the GPU is busy."""
 
-    def __init__(self, video_paths: list[str], num_frames: int, max_workers: int):
+    def __init__(
+        self,
+        video_paths: list[str],
+        num_frames: int,
+        max_workers: int,
+        frame_reader: callable = read_video_pyav,
+    ):
         self._pool = ThreadPoolExecutor(max_workers=max_workers)
         self._video_paths = video_paths
         self._num_frames = num_frames
+        self._frame_reader = frame_reader
         self._futures = {}
         self._next_submit = 0
 
@@ -274,7 +281,7 @@ class FramePrefetcher:
                 return None
 
         try:
-            return read_video_pyav(self._video_paths[video_index], self._num_frames)
+            return self._frame_reader(self._video_paths[video_index], self._num_frames)
         except Exception as e:
             logger.debug(
                 f"Sync load failed for {self._video_paths[video_index]}: {e}")
@@ -287,7 +294,7 @@ class FramePrefetcher:
         if self._next_submit < len(self._video_paths):
             idx = self._next_submit
             self._futures[idx] = self._pool.submit(
-                read_video_pyav, self._video_paths[idx], self._num_frames
+                self._frame_reader, self._video_paths[idx], self._num_frames
             )
             self._next_submit += 1
 

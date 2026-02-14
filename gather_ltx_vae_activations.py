@@ -7,6 +7,7 @@ reshaped to (N, C) — one row per spatiotemporal position.
 import json
 import logging
 import os
+import random
 from dataclasses import dataclass
 
 import click
@@ -23,7 +24,7 @@ from gather_ltx_activations import (
     remove_norm_outliers,
     reshape_vae_activation,
 )
-from video_utils import scan_video_directory
+from video_utils import read_consecutive_frames, scan_video_directory
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -42,6 +43,13 @@ class VaeLatentConfig:
     shard_size: int = 50
     max_norm_multiple: int = 10
     prefetch_workers: int = 4
+
+
+def read_consecutive_frames_random_start(
+    video_path: str, num_frames: int,
+) -> list:
+    start_fraction = random.random() * 0.5
+    return read_consecutive_frames(video_path, num_frames, start_fraction)
 
 
 @torch.no_grad()
@@ -72,7 +80,8 @@ def gather_vae_latents(config: VaeLatentConfig):
 
     writer = ShardWriter(config.output_dir)
     prefetcher = FramePrefetcher(
-        remaining, config.num_frames, config.prefetch_workers)
+        remaining, config.num_frames, config.prefetch_workers,
+        frame_reader=read_consecutive_frames_random_start)
     videos_since_flush = 0
 
     for idx, video_path in enumerate(tqdm(remaining, desc="Encoding VAE latents")):

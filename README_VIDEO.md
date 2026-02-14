@@ -14,6 +14,8 @@ python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal
 
 python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output_dir ./ltx_activations --hook_target vae_encoder --hook_modules  encoder.down_blocks.0.resnets.3  --num_frames 321
 
+python gather_ltx_vae_activations.py  --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output-dir ./ltx_activations_vae  --num-frames 321
+
 
 
   # Stage 2: Train SAE (repeatable with different configs)
