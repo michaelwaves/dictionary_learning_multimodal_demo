@@ -29,6 +29,8 @@ dependencies = [
     "av>=14.0.0",
     "ipykernel",
     "huggingface-hub>=1.4.1",
+    "imageio>=2.37.2",
+    "imageio-ffmpeg>=0.6.0",
 ]
 
 [tool.pyright]
