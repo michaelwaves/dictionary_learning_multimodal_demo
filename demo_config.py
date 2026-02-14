@@ -121,6 +121,9 @@ LLM_CONFIG = {
     ),
     "Lightricks/LTX-Video": LLMConfig(
         llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
+    ),
+    "Lightricks/LTX-Video-0.9.5": LLMConfig(
+        llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
     )
 }
 
