@@ -1,4 +1,12 @@
 
+ # Prerequisites
+
+ uv installed on system, GPU with at least 40GB VRAM
+```sh
+#install dependencies
+uv sync
+```
+
   # Stage 1: Gather activations (run once)
 
 - gather_video_activations.py: Qwen/ViTs
@@ -51,3 +59,8 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
  python eval/visualize_features.py --sae-path video_saes/resid_post_layer_encoder.down_blocks.2.resnets.2/trainer_3/checkpoints/ae_11117.pt --video-path sample_videos/jam.mp4 --output-dir ./eval/output --hook-module encoder.down_blocks.2.resnets.2 --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
 
  ```
+
+ # Utility scripts:
+
+- recon_test.py: check if the vae encoding/decoding is working
+- activations_test.py: analyze layer activations with singular value decomposition (SVD) to see which ones have variance that is not 99% explained by like top 10 features (to not make it way too easy for SAE).
