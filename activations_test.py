@@ -22,7 +22,7 @@ LAYERS_TO_PROBE = [
     "encoder.conv_out"
 ]
 
-vae = load_vae("Lightricks/LTX-Video", "cuda", enable_tiling=False)
+vae = load_vae("Lightricks/LTX-Video-0.9.5", "cuda", enable_tiling=False)
 
 # Grab first video from your directory
 video_dir = "/mnt/nw/home/m.yu/repos/multimodal_sae/videos"
@@ -37,7 +37,8 @@ with torch.no_grad(), multi_module_hooks(vae, LAYERS_TO_PROBE) as captured:
 
 
 z = vae.encode(video_tensor).latent_dist.mean
-recon = vae.decode(z).sample
+temb = torch.tensor([0.05], device="cuda", dtype=torch.float32)
+recon = vae.decode(z, temb=temb).sample
 frame = 0  # maybe sample multiple frames cuz they compress temporal
 # is there pixel normalization -1 to 1 ? check if their vae has a preprocessor
 # train single frame sae vs temporal sae (multi frame, 2 seconds)
