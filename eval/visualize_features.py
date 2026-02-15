@@ -21,13 +21,15 @@ def extract_feature_activations(
     video_tensor: torch.Tensor,
     vae: torch.nn.Module,
     sae: MatryoshkaBatchTopKSAE,
-    hook_module: str,
+    hook_module: str | None,
 ) -> tuple[torch.Tensor, tuple[int, ...]]:
     """Run VAE encode + SAE encode, return (N, dict_size) features and spatial dims."""
-    with multi_module_hooks(vae, [hook_module]) as captured:
-        vae.encode(video_tensor)
-
-    activation = captured[hook_module]
+    if hook_module:
+        with multi_module_hooks(vae, [hook_module]) as captured:
+            vae.encode(video_tensor)
+        activation = captured[hook_module]
+    else:
+        activation = vae.encode(video_tensor, return_dict=True).latent_dist.mean
     if activation.ndim == 5:
         _, channels, temporal, height, width = activation.shape
         spatial_dims = (temporal, height, width)
@@ -100,7 +102,7 @@ def load_display_frames(
 @click.option("--sae-path", required=True, type=click.Path(exists=True))
 @click.option("--video-path", required=True, type=click.Path(exists=True))
 @click.option("--output-dir", required=True, type=click.Path())
-@click.option("--hook-module", required=True, help="VAE layer, e.g. encoder.mid_block")
+@click.option("--hook-module", default=None, help="VAE layer to hook (omit for full encoder output)")
 @click.option("--vae-model", default="Lightricks/LTX-Video-0.9.5")
 @click.option("--num-frames", default=25, help="Frames to feed VAE ((n-1) %% 8 == 0)")
 @click.option("--display-frames", default=8, help="Frames shown per feature image")

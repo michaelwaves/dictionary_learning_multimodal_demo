@@ -58,6 +58,8 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
 ```sh
  python eval/visualize_features.py --sae-path video_saes/resid_post_layer_encoder.down_blocks.2.resnets.2/trainer_3/checkpoints/ae_11117.pt --video-path sample_videos/jam.mp4 --output-dir ./eval/output --hook-module encoder.down_blocks.2.resnets.2 --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
 
+  python eval/visualize_features.py --sae-path video_saes/resid_post_layer_unknown --video-path sample_videos/jam.mp4 --output-dir ./eval/output/encoder  --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
+
  ```
 
  # Utility scripts:
