@@ -24,7 +24,7 @@ from gather_ltx_activations import (
     remove_norm_outliers,
     reshape_vae_activation,
 )
-from video_utils import read_consecutive_frames, scan_video_directory
+from video_utils import read_all_frames, read_consecutive_frames, scan_video_directory
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -43,6 +43,8 @@ class VaeLatentConfig:
     shard_size: int = 50
     max_norm_multiple: int = 10
     prefetch_workers: int = 4
+    full_video: bool = False
+    max_videos: int = 0
 
 
 def read_consecutive_frames_random_start(
@@ -52,10 +54,55 @@ def read_consecutive_frames_random_start(
     return read_consecutive_frames(video_path, num_frames, start_fraction)
 
 
+def align_to_vae_frame_count(n: int) -> int:
+    """Round up to nearest valid VAE frame count where (result - 1) % 8 == 0."""
+    if n <= 1:
+        return 1
+    return ((n - 2) // 8 + 1) * 8 + 1
+
+
+MIN_VAE_CHUNK_FRAMES = 9
+
+
+def chunk_frames_for_vae(
+    frames: list, chunk_size: int,
+) -> list[list]:
+    """Split a full video's frames into VAE-aligned non-overlapping chunks."""
+    chunks = []
+    for start in range(0, len(frames), chunk_size):
+        chunk = frames[start:start + chunk_size]
+        if len(chunk) < MIN_VAE_CHUNK_FRAMES:
+            break
+        aligned_size = align_to_vae_frame_count(len(chunk))
+        while len(chunk) < aligned_size:
+            chunk.append(chunk[-1])
+        chunks.append(chunk)
+    return chunks
+
+
 @torch.no_grad()
 def encode_latent_mean(video_tensor: torch.Tensor, vae: torch.nn.Module) -> torch.Tensor:
     latent_mean = vae.encode(video_tensor, return_dict=True).latent_dist.mean
     return reshape_vae_activation(latent_mean).float()
+
+
+@torch.no_grad()
+def encode_full_video_in_chunks(
+    frames: list,
+    vae: torch.nn.Module,
+    chunk_size: int,
+    height: int,
+    width: int,
+    device: str,
+) -> torch.Tensor:
+    """Encode all frames by chunking into VAE-aligned segments."""
+    chunks = chunk_frames_for_vae(frames, chunk_size)
+    activations = []
+    for chunk in chunks:
+        video_tensor = preprocess_frames(chunk, height, width, device)
+        activations.append(encode_latent_mean(video_tensor, vae))
+        del video_tensor
+    return torch.cat(activations, dim=0)
 
 
 def gather_vae_latents(config: VaeLatentConfig):
@@ -67,6 +114,8 @@ def gather_vae_latents(config: VaeLatentConfig):
     os.makedirs(config.output_dir, exist_ok=True)
     progress = ProgressTracker(config.output_dir)
     remaining = [p for p in video_paths if not progress.is_done(p)]
+    if config.max_videos > 0:
+        remaining = remaining[:config.max_videos]
     logger.info(f"Remaining: {len(remaining)} / {len(video_paths)}")
     if not remaining:
         return
@@ -79,21 +128,35 @@ def gather_vae_latents(config: VaeLatentConfig):
     del dummy
 
     writer = ShardWriter(config.output_dir)
+
+    if config.full_video:
+        frame_reader = lambda path, _num_frames: read_all_frames(path)
+    else:
+        frame_reader = read_consecutive_frames_random_start
+
     prefetcher = FramePrefetcher(
         remaining, config.num_frames, config.prefetch_workers,
-        frame_reader=read_consecutive_frames_random_start)
+        frame_reader=frame_reader)
     videos_since_flush = 0
 
-    for idx, video_path in enumerate(tqdm(remaining, desc="Encoding VAE latents")):
+    desc = "Encoding full videos" if config.full_video else "Encoding VAE latents"
+    for idx, video_path in enumerate(tqdm(remaining, desc=desc)):
         frames = prefetcher.get_frames(idx)
         if frames is None:
             progress.mark_done(video_path)
             continue
 
         try:
-            video_tensor = preprocess_frames(
-                frames, config.height, config.width, config.device)
-            activations = encode_latent_mean(video_tensor, vae)
+            if config.full_video:
+                activations = encode_full_video_in_chunks(
+                    frames, vae, config.num_frames,
+                    config.height, config.width, config.device,
+                )
+            else:
+                video_tensor = preprocess_frames(
+                    frames, config.height, config.width, config.device)
+                activations = encode_latent_mean(video_tensor, vae)
+                del video_tensor
         except Exception as e:
             logger.warning(f"Failed {video_path}: {e}")
             progress.mark_done(video_path)
@@ -105,7 +168,7 @@ def gather_vae_latents(config: VaeLatentConfig):
         if activations.numel() > 0:
             writer.append(activations)
 
-        del activations, video_tensor
+        del activations
         torch.cuda.empty_cache()
         progress.mark_done(video_path)
         videos_since_flush += 1
@@ -150,6 +213,8 @@ def gather_vae_latents(config: VaeLatentConfig):
 @click.option("--shard-size", default=50, type=int)
 @click.option("--max-norm-multiple", default=10, type=int)
 @click.option("--prefetch-workers", default=4, type=int)
+@click.option("--full-video", is_flag=True, help="Encode entire videos in chunks instead of sampling frames")
+@click.option("--max-videos", default=0, type=int, help="Max videos to process (0 = all)")
 def main(**kwargs):
     gather_vae_latents(VaeLatentConfig(**kwargs))
 

@@ -101,6 +101,18 @@ def read_consecutive_frames(
     return frames
 
 
+def read_all_frames(video_path: str) -> list[np.ndarray]:
+    """Decode every frame from a video at native framerate."""
+    with _open_video(video_path) as container:
+        frames = [
+            frame.to_ndarray(format="rgb24")
+            for frame in container.decode(video=0)
+        ]
+    if not frames:
+        raise ValueError(f"No frames decoded from {video_path}")
+    return frames
+
+
 def scan_video_directory(video_dir: str | list[str]) -> list[str]:
     """Recursively find all video files in one or more directories."""
     if isinstance(video_dir, str):

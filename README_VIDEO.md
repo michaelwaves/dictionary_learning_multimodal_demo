@@ -32,6 +32,14 @@ python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal
 
 python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output-dir ./ltx_activations_vae  --num-frames 321
 
+
+  python gather_ltx_encoder_activations.py \
+      --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos \
+      --output-dir ./ltx_activations_vae_full \
+      --num-frames 33 \
+      --full-video \
+      --max-videos 100
+
 ```
 
   # Stage 2: Train SAE (repeatable with different configs)
@@ -50,6 +58,9 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
  python demo_video.py --activation_dir ./ltx_activations/encoder-down_blocks-2-resnets-2 --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 500000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
 
  python demo_video.py --activation_dir ./ltx_activations/encoder_down_blocks_0_resnets_3 --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 72000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
+
+ 
+ python demo_video.py --activation_dir ./ltx_activations_vae --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 72000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
 ```
 
  
