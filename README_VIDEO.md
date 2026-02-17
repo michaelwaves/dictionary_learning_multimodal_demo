@@ -72,7 +72,9 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
   python eval/visualize_features.py --sae-path video_saes/resid_post_layer_unknown --video-path sample_videos/jam.mp4 --output-dir ./eval/output/encoder  --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
 
 
-    python eval/top_samples.py --sae-path /path/to/sae --video-dir /path/to/deepfake_videos --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100  # start small to test
+    python eval/top_samples.py --sae-path /path/to/sae --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100  # start small to test
+
+       python eval/top_samples.py --sae-path /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/resid_post_layer_unknown/trainer_1/ae.pt --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100 
 
  ```
 

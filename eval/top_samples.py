@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import (
     MatryoshkaBatchTopKSAE,
 )
+from eval.heatmap import render_feature_heatmap
 from gather_ltx_activations import load_vae, multi_module_hooks, preprocess_frames
 from gather_ltx_encoder_activations import chunk_frames_for_vae
 from video_utils import read_all_frames, scan_video_directory
