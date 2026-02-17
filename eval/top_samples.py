@@ -1,13 +1,15 @@
 """Find top-activating video chunks per SAE feature across a corpus."""
 
+import json
 import os
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import click
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -68,7 +70,8 @@ class TopChunkTracker:
 
 
 @torch.no_grad()
-def compute_chunk_feature_means(frames, vae, sae, hook_module, height, width, device):
+def encode_chunk_features(frames, vae, sae, hook_module, height, width, device):
+    """Encode frames through VAE + SAE, return (N, dict_size) features and spatial dims."""
     video_tensor = preprocess_frames(frames, height, width, device)
     if hook_module:
         with multi_module_hooks(vae, [hook_module]) as captured:
@@ -77,14 +80,19 @@ def compute_chunk_feature_means(frames, vae, sae, hook_module, height, width, de
     else:
         activation = vae.encode(video_tensor, return_dict=True).latent_dist.mean
     if activation.ndim == 5:
-        flat = activation.permute(0, 2, 3, 4, 1).reshape(-1, activation.shape[1])
+        _, c, t, h, w = activation.shape
+        flat = activation.permute(0, 2, 3, 4, 1).reshape(-1, c)
+        spatial_dims = (t, h, w)
     elif activation.ndim == 4:
-        flat = activation.permute(0, 2, 3, 1).reshape(-1, activation.shape[1])
+        _, c, h, w = activation.shape
+        flat = activation.permute(0, 2, 3, 1).reshape(-1, c)
+        spatial_dims = (1, h, w)
     else:
         flat = activation.reshape(-1, activation.shape[-1])
+        spatial_dims = (flat.shape[0], 1, 1)
     features = sae.encode(flat.to(sae.W_enc.device))
     del video_tensor, activation
-    return features.mean(dim=0)
+    return features, spatial_dims
 
 
 def scan_corpus(
@@ -102,37 +110,96 @@ def scan_corpus(
         for chunk in chunks:
             raw_count = min(chunk_size, len(all_frames) - offset)
             try:
-                means = compute_chunk_feature_means(
+                features, _ = encode_chunk_features(
                     chunk, vae, sae, hook_module, height, width, device,
                 )
             except Exception:
                 offset += chunk_size
                 continue
-            tracker.update(means, video_path, offset, raw_count)
+            tracker.update(features.mean(dim=0), video_path, offset, raw_count)
             offset += chunk_size
-            del means
+            del features
             torch.cuda.empty_cache()
         del all_frames
     return tracker
 
 
-def render_feature_grid(chunks, chunk_size, thumb_height):
+LABEL_WIDTH = 220
+LABEL_BG = (30, 30, 30)
+TEXT_COLOR = (220, 220, 220)
+
+try:
+    _FONT = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+except (OSError, IOError):
+    _FONT = ImageFont.load_default()
+
+
+def render_row_label(lines: list[str], height: int) -> np.ndarray:
+    label = Image.new("RGB", (LABEL_WIDTH, height), LABEL_BG)
+    draw = ImageDraw.Draw(label)
+    y = 4
+    for line in lines:
+        draw.text((6, y), line, fill=TEXT_COLOR, font=_FONT)
+        y += 15
+    return np.array(label)
+
+
+@torch.no_grad()
+def render_feature_grid(
+    chunks, feature_idx, chunk_size, thumb_height, fire_count,
+    vae, sae, hook_module, height, width, device,
+):
     strips = []
-    for ref in chunks:
+    for rank, ref in enumerate(chunks, 1):
         frames = read_all_frames(ref.video_path)
         frames = frames[ref.chunk_start:ref.chunk_start + ref.chunk_frame_count]
         while len(frames) < chunk_size:
             frames.append(frames[-1])
-        panels = []
-        for frame in frames[:chunk_size]:
+        frames = frames[:chunk_size]
+
+        features, (t_lat, h_lat, w_lat) = encode_chunk_features(
+            frames, vae, sae, hook_module, height, width, device,
+        )
+        activation_map = features[:, feature_idx].reshape(t_lat, h_lat, w_lat)
+        del features
+        torch.cuda.empty_cache()
+
+        thumbs = []
+        for frame in frames:
             h, w = frame.shape[:2]
             thumb_w = int(w * thumb_height / h)
-            panels.append(np.array(
+            thumbs.append(np.array(
                 Image.fromarray(frame).resize((thumb_w, thumb_height), Image.LANCZOS),
             ))
-        strips.append(np.concatenate(panels, axis=1))
+        latent_indices = [
+            min(i * t_lat // len(frames), t_lat - 1) for i in range(len(frames))
+        ]
+        heatmap_strip = np.array(
+            render_feature_heatmap(activation_map, thumbs, latent_indices),
+        )
+
+        video_name = os.path.basename(ref.video_path)
+        if len(video_name) > 30:
+            video_name = video_name[:27] + "..."
+        end_frame = ref.chunk_start + ref.chunk_frame_count
+        label = render_row_label([
+            f"#{rank}  score: {ref.score:.4f}",
+            video_name,
+            f"frames {ref.chunk_start}-{end_frame}",
+        ], thumb_height)
+        strips.append(np.concatenate([label, heatmap_strip], axis=1))
+
     max_w = max(s.shape[1] for s in strips)
-    rows = []
+
+    # Title row
+    title_label = render_row_label([
+        f"Feature {feature_idx}  |  {fire_count} fires",
+    ], 20)
+    title_pad = np.full(
+        (20, max_w - LABEL_WIDTH, 3), LABEL_BG[0], dtype=np.uint8,
+    )
+    title_row = np.concatenate([title_label, title_pad], axis=1)
+    rows = [title_row]
     for strip in strips:
         if strip.shape[1] < max_w:
             pad = np.zeros(
@@ -146,7 +213,7 @@ def render_feature_grid(chunks, chunk_size, thumb_height):
 @click.command()
 @click.option("--sae-path", required=True, type=click.Path(exists=True))
 @click.option("--video-dir", required=True, type=click.Path(exists=True))
-@click.option("--output-dir", required=True, type=click.Path())
+@click.option("--output-dir", default="top_samples", type=click.Path())
 @click.option("--hook-module", default=None)
 @click.option("--vae-model", default="Lightricks/LTX-Video-0.9.5")
 @click.option("--num-frames", default=33, type=int, help="Chunk size matching gather")
@@ -162,7 +229,11 @@ def main(
     samples_per_feature, topk_features, feature_indices, min_fire_count,
     thumb_height, max_videos, device,
 ):
-    os.makedirs(output_dir, exist_ok=True)
+    run_dir = os.path.join(
+        output_dir, "runs", datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
+    os.makedirs(run_dir, exist_ok=True)
+
     vae = load_vae(vae_model, device, enable_tiling=False)
     sae = MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device)
     sae.eval()
@@ -178,15 +249,37 @@ def main(
         indices = [int(x) for x in feature_indices.split(",")]
     else:
         indices = tracker.most_sparse_features(topk_features, min_fire_count)
+
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "sae_path": os.path.abspath(sae_path),
+        "video_dir": os.path.abspath(video_dir),
+        "vae_model": vae_model,
+        "hook_module": hook_module,
+        "num_frames": num_frames,
+        "num_videos_scanned": len(video_paths),
+        "samples_per_feature": samples_per_feature,
+        "topk_features": topk_features,
+        "feature_indices": indices,
+        "min_fire_count": min_fire_count,
+        "thumb_height": thumb_height,
+        "dict_size": sae.dict_size,
+    }
+    with open(os.path.join(run_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
     click.echo(f"Rendering {len(indices)} features...")
     for feat_idx in tqdm(indices, desc="Rendering"):
         chunks = tracker.get_top_chunks(feat_idx)
         if not chunks:
             continue
-        image = render_feature_grid(chunks, num_frames, thumb_height)
         fires = tracker.fire_counts[feat_idx].item()
-        image.save(os.path.join(output_dir, f"feature_{feat_idx:04d}_fires{fires}.png"))
-    click.echo(f"Saved to {output_dir}")
+        image = render_feature_grid(
+            chunks, feat_idx, num_frames, thumb_height, fires,
+            vae, sae, hook_module, 256, 256, device,
+        )
+        image.save(os.path.join(run_dir, f"feature_{feat_idx:04d}_fires{fires}.png"))
+    click.echo(f"Saved to {run_dir}")
 
 
 if __name__ == "__main__":
