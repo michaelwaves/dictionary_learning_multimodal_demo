@@ -25,6 +25,14 @@ _DTYPE_MAP = {
     "float32": torch.float32,
 }
 
+TEMPORAL_STRIDE = {"ltx": 8, "wan": 4}
+SPATIAL_DIVISOR = {"ltx": 32, "wan": 16}
+DEFAULT_MODEL_NAMES = {
+    "ltx": "Lightricks/LTX-Video-0.9.5",
+    "wan": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+}
+MIN_VAE_CHUNK_FRAMES = 9
+
 
 def make_run_dir(base: str = "activations/runs") -> str:
     run_dir = os.path.join(base, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
@@ -199,3 +207,30 @@ class FramePrefetcher:
                 self._frame_reader, self._video_paths[idx], self._num_frames,
             )
             self._next_submit += 1
+
+
+def load_model_vae(model_name: str, vae_type: str, device: str):
+    if vae_type == "wan":
+        from wan_model import load_wan_vae
+        return load_wan_vae(model_name, device)
+    from ltx_model import load_ltx_vae
+    return load_ltx_vae(model_name, device, enable_tiling=False)
+
+
+def align_to_vae_frame_count(n: int, temporal_stride: int = 8) -> int:
+    if n <= 1:
+        return 1
+    return ((n - 2) // temporal_stride + 1) * temporal_stride + 1
+
+
+def chunk_frames_for_vae(frames: list, chunk_size: int, temporal_stride: int = 8) -> list[list]:
+    chunks = []
+    for start in range(0, len(frames), chunk_size):
+        chunk = frames[start:start + chunk_size]
+        if len(chunk) < MIN_VAE_CHUNK_FRAMES:
+            break
+        aligned_size = align_to_vae_frame_count(len(chunk), temporal_stride)
+        while len(chunk) < aligned_size:
+            chunk.append(chunk[-1])
+        chunks.append(chunk)
+    return chunks

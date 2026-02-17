@@ -12,19 +12,11 @@ from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k imp
     MatryoshkaBatchTopKSAE,
 )
 from eval.heatmap import render_feature_heatmap, sample_frame_indices
-from gather_utils import multi_module_hooks, preprocess_frames
-from gather_ltx_encoder_activations import chunk_frames_for_vae
+from gather_utils import (
+    TEMPORAL_STRIDE, chunk_frames_for_vae, load_model_vae,
+    multi_module_hooks, preprocess_frames,
+)
 from video_utils import read_all_frames, read_consecutive_frames, read_video_pyav
-
-TEMPORAL_STRIDE = {"ltx": 8, "wan": 4}
-
-
-def load_model_vae(vae_model: str, vae_type: str, device: str):
-    if vae_type == "wan":
-        from wan_model import load_wan_vae
-        return load_wan_vae(vae_model, device)
-    from gather_ltx_activations import load_vae
-    return load_vae(vae_model, device, enable_tiling=False)
 
 
 @torch.no_grad()

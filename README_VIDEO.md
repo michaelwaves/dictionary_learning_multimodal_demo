@@ -1,96 +1,62 @@
+# Video SAE Pipeline
 
- # Prerequisites
-
- uv installed on system, GPU with at least 40GB VRAM
 ```sh
-#install dependencies
 uv sync
 ```
 
-  # Stage 1: Gather activations (run once)
+## Stage 1: Gather activations
 
-- gather_video_activations.py: Qwen/ViTs
-
-Ltx/DiTs
-- gather_ltx_activations.py: more complex script that lets you choose which encoder block(s) to hook
-- gather_ltx_encoder_activations.py: simpler script that just gets activations from full encoder, sampling from latent distribution with vae.encode(tensor).latent_dist.mean 
+Diffusion models (LTX, Wan):
 ```sh
+# VAE latent mean
+python gather_diffusion_activations.py \
+    --model-type wan --hook-target vae_latent_mean \
+    --video-dir /path/to/videos --full-video
 
-  python gather_video_activations.py \
-      --model_name "Qwen/Qwen3-VL-8B-Instruct" \
-      --video_dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos/ \
-      --output_dir ./activations \
-      --layers 12 18 24 \
-      --num_frames 16 \
-      --device cuda:0
+# Transformer block hooks
+python gather_diffusion_activations.py \
+    --model-type ltx --hook-target transformer \
+    --hook-modules transformer_blocks.14 \
+    --video-dir /path/to/videos
 
-  python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output_dir ./ltx_activations_test --hook_target vae_encoder --hook_modules  encoder.mid_block  --num_frames 25
-
-python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output_dir ./ltx_activations --hook_target vae_encoder --hook_modules  encoder.down_blocks.2.resnets.2  --num_frames 321
-
-python gather_ltx_activations.py  --video_dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output_dir ./ltx_activations --hook_target vae_encoder --hook_modules  encoder.down_blocks.0.resnets.3  --num_frames 321
-
-python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos  --output-dir ./ltx_activations_vae  --num-frames 321
-
-
-  python gather_ltx_encoder_activations.py \
-      --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos \
-      --output-dir ./ltx_activations_vae_full \
-      --num-frames 33 \
-      --full-video \
-      --max-videos 100
-
-    python gather_ltx_encoder_activations.py \
-      --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf \
-      --vae-type wan \
-      --model-name Wan-AI/Wan2.2-TI2V-5B-Diffusers \
-      --num-frames 17
-
+# VAE encoder intermediate hooks
+python gather_diffusion_activations.py \
+    --model-type ltx --hook-target vae_encoder \
+    --hook-modules encoder.mid_block \
+    --video-dir /path/to/videos
 ```
 
-  # Stage 2: Train SAE (repeatable with different configs)
-
-  demo_video.py works for all architectures lightricks and qwen
-
-  ```sh
-  python demo_video.py \
-      --activation_dir ./activations/layer_18 \
-      --save_dir video_saes \
-      --architectures matryoshka_batch_top_k \
-      --device cuda:0 \
-      --use_wandb
-
-
- python demo_video.py --activation_dir ./ltx_activations/encoder-down_blocks-2-resnets-2 --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 500000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
-
- python demo_video.py --activation_dir ./ltx_activations/encoder_down_blocks_0_resnets_3 --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 72000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
-
- 
- python demo_video.py --activation_dir ./ltx_activations_vae --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 23000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
-
-  python demo_video.py \
-      --activation_dir /mnt/nw/home/m.yu/repos/dictionary_learning_demo/activations/runs/2026-02-17_04-02-20 \
-      --architectures matryoshka_batch_top_k \
-      --use_wandb
-
+Vision-language models (Qwen3-VL):
+```sh
+python gather_vl_activations.py \
+    --video-dir /path/to/videos \
+    --layers 12 18 24
 ```
 
- 
- # Stage 3: Eval
+## Stage 2: Train SAE
 
 ```sh
- python eval/visualize_features.py --sae-path video_saes/resid_post_layer_encoder.down_blocks.2.resnets.2/trainer_3/checkpoints/ae_11117.pt --video-path sample_videos/jam.mp4 --output-dir ./eval/output --hook-module encoder.down_blocks.2.resnets.2 --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
+python demo_video.py \
+    --activation_dir activations/runs/<datetime>/vae_latent_mean \
+    --architectures matryoshka_batch_top_k \
+    --use_wandb
+```
 
-  python eval/visualize_features.py --sae-path video_saes/resid_post_layer_unknown --video-path sample_videos/jam.mp4 --output-dir ./eval/output/encoder  --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
+## Stage 3: Eval
 
+```sh
+python eval/visualize_features.py \
+    --sae-path /path/to/sae.pt \
+    --video-path /path/to/video.mp4 \
+    --output-dir ./viz
 
-    python eval/top_samples.py --sae-path /path/to/sae --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100  # start small to test
+python eval/top_samples.py \
+    --sae-path /path/to/sae.pt \
+    --video-dir /path/to/videos \
+    --output-dir ./top_samples
+```
 
-       python eval/top_samples.py --sae-path /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/resid_post_layer_unknown/trainer_1/ae.pt --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100 
+## Utility scripts
 
- ```
-
- # Utility scripts:
-
-- recon_test.py: check if the vae encoding/decoding is working
-- activations_test.py: analyze layer activations with singular value decomposition (SVD) to see which ones have variance that is not 99% explained by like top 10 features (to not make it way too easy for SAE).
+- `recon_test.py` — VAE encode/decode sanity check
+- `activations_test.py` — SVD analysis of layer activations
