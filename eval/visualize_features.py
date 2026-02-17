@@ -13,7 +13,8 @@ from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k imp
 )
 from eval.heatmap import render_feature_heatmap, sample_frame_indices
 from gather_ltx_activations import load_vae, multi_module_hooks, preprocess_frames
-from video_utils import read_consecutive_frames, read_video_pyav
+from gather_ltx_encoder_activations import chunk_frames_for_vae
+from video_utils import read_all_frames, read_consecutive_frames, read_video_pyav
 
 
 @torch.no_grad()
@@ -43,6 +44,40 @@ def extract_feature_activations(
 
     feature_activations = sae.encode(flat.to(sae.W_enc.device))
     return feature_activations, spatial_dims
+
+
+@torch.no_grad()
+def extract_chunked_feature_activations(
+    all_frames: list,
+    vae: torch.nn.Module,
+    sae: MatryoshkaBatchTopKSAE,
+    hook_module: str | None,
+    chunk_size: int,
+    height: int,
+    width: int,
+    device: str,
+) -> tuple[torch.Tensor, int, int, int]:
+    """Encode a full video in VAE-aligned chunks through VAE + SAE."""
+    chunks = chunk_frames_for_vae(all_frames, chunk_size)
+    if not chunks:
+        raise ValueError(f"Video too short to chunk ({len(all_frames)} frames)")
+
+    all_features = []
+    lat_h = lat_w = 0
+
+    for chunk in chunks:
+        video_tensor = preprocess_frames(chunk, height, width, device)
+        features, (_, h, w) = extract_feature_activations(
+            video_tensor, vae, sae, hook_module,
+        )
+        all_features.append(features)
+        lat_h, lat_w = h, w
+        del video_tensor
+        torch.cuda.empty_cache()
+
+    feature_acts = torch.cat(all_features, dim=0)
+    total_temporal = feature_acts.shape[0] // (lat_h * lat_w)
+    return feature_acts, total_temporal, lat_h, lat_w
 
 
 def select_top_features(
@@ -114,10 +149,12 @@ def load_display_frames(
 @click.option("--max-count", default=200, help="Max fire count to include a feature")
 @click.option("--topk", default=20, help="Number of top features to visualize")
 @click.option("--start", default=0.0, help="Skip this fraction of the video (0.0-1.0)")
+@click.option("--full-video", is_flag=True, help="Encode entire video in chunks (matches full-video gathering)")
 @click.option("--device", default="cuda")
 def main(
     sae_path, video_path, output_dir, hook_module, vae_model,
-    num_frames, display_frames, sampling, min_count, max_count, topk, start, device,
+    num_frames, display_frames, sampling, min_count, max_count, topk, start,
+    full_video, device,
 ):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -126,26 +163,42 @@ def main(
     sae = MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device)
     sae.eval()
 
-    click.echo(f"Reading {num_frames} frames for VAE (start={start:.0%})...")
-    vae_frames = read_video_pyav(video_path, num_frames, start)
-    video_tensor = preprocess_frames(vae_frames, height=256, width=256, device=device)
+    if full_video:
+        click.echo("Reading all frames for chunked encoding...")
+        all_frames = read_all_frames(video_path)
+        click.echo(f"  {len(all_frames)} frames, chunk_size={num_frames}")
 
-    click.echo("Extracting feature activations...")
-    feature_acts, spatial_dims = extract_feature_activations(
-        video_tensor, vae, sae, hook_module,
-    )
-    temporal, lat_h, lat_w = spatial_dims
+        feature_acts, temporal, lat_h, lat_w = extract_chunked_feature_activations(
+            all_frames, vae, sae, hook_module,
+            chunk_size=num_frames, height=256, width=256, device=device,
+        )
+
+        selected = sample_frame_indices(len(all_frames), display_frames, sampling)
+        frames_to_show = [all_frames[i] for i in selected]
+        latent_indices = [
+            min(i * temporal // len(all_frames), temporal - 1) for i in selected
+        ]
+    else:
+        click.echo(f"Reading {num_frames} frames for VAE (start={start:.0%})...")
+        vae_frames = read_video_pyav(video_path, num_frames, start)
+        video_tensor = preprocess_frames(vae_frames, height=256, width=256, device=device)
+
+        click.echo("Extracting feature activations...")
+        feature_acts, spatial_dims = extract_feature_activations(
+            video_tensor, vae, sae, hook_module,
+        )
+        temporal, lat_h, lat_w = spatial_dims
+
+        click.echo(f"Loading {display_frames} display frames ({sampling})...")
+        frames_to_show, latent_indices = load_display_frames(
+            video_path, display_frames, sampling, num_frames, start,
+        )
 
     click.echo("Selecting top features...")
     top_indices = select_top_features(feature_acts, min_count, max_count, topk)
     if len(top_indices) == 0:
         click.echo(f"No features fire between {min_count} and {max_count} times.")
         return
-
-    click.echo(f"Loading {display_frames} display frames ({sampling})...")
-    frames_to_show, latent_indices = load_display_frames(
-        video_path, display_frames, sampling, num_frames, start,
-    )
 
     fire_counts = (feature_acts > 0).sum(dim=0)
     click.echo(f"Rendering {len(top_indices)} feature heatmaps...")

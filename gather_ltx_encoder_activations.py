@@ -24,7 +24,13 @@ from gather_ltx_activations import (
     remove_norm_outliers,
     reshape_vae_activation,
 )
-from video_utils import read_all_frames, read_consecutive_frames, scan_video_directory
+from video_utils import (
+    read_all_frames,
+    read_consecutive_frames,
+    read_image_as_frame,
+    scan_image_directory,
+    scan_video_directory,
+)
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -33,8 +39,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class VaeLatentConfig:
-    video_dir: str
-    output_dir: str
+    video_dir: str = ""
+    image_dir: str = ""
+    output_dir: str = ""
     model_name: str = "Lightricks/LTX-Video-0.9.5"
     device: str = "cuda:0"
     num_frames: int = 17
@@ -45,6 +52,10 @@ class VaeLatentConfig:
     prefetch_workers: int = 4
     full_video: bool = False
     max_videos: int = 0
+
+    @property
+    def is_image_mode(self) -> bool:
+        return bool(self.image_dir)
 
 
 def read_consecutive_frames_random_start(
@@ -106,30 +117,39 @@ def encode_full_video_in_chunks(
 
 
 def gather_vae_latents(config: VaeLatentConfig):
-    video_paths = scan_video_directory(config.video_dir)
-    if not video_paths:
-        raise RuntimeError(f"No videos found in {config.video_dir}")
-    logger.info(f"Found {len(video_paths)} videos")
+    if config.is_image_mode:
+        input_paths = scan_image_directory(config.image_dir)
+        if not input_paths:
+            raise RuntimeError(f"No images found in {config.image_dir}")
+        logger.info(f"Found {len(input_paths)} images")
+    else:
+        input_paths = scan_video_directory(config.video_dir)
+        if not input_paths:
+            raise RuntimeError(f"No videos found in {config.video_dir}")
+        logger.info(f"Found {len(input_paths)} videos")
 
     os.makedirs(config.output_dir, exist_ok=True)
     progress = ProgressTracker(config.output_dir)
-    remaining = [p for p in video_paths if not progress.is_done(p)]
+    remaining = [p for p in input_paths if not progress.is_done(p)]
     if config.max_videos > 0:
         remaining = remaining[:config.max_videos]
-    logger.info(f"Remaining: {len(remaining)} / {len(video_paths)}")
+    logger.info(f"Remaining: {len(remaining)} / {len(input_paths)}")
     if not remaining:
         return
 
     vae = load_vae(config.model_name, config.device, enable_tiling=False)
 
-    dummy = torch.randn(1, 3, 9, 128, 128, device=config.device).clamp_(-1, 1)
+    dummy_frames = 1 if config.is_image_mode else 9
+    dummy = torch.randn(1, 3, dummy_frames, 128, 128, device=config.device).clamp_(-1, 1)
     d_in = encode_latent_mean(dummy, vae).shape[-1]
     logger.info(f"Latent d_in={d_in}")
     del dummy
 
     writer = ShardWriter(config.output_dir)
 
-    if config.full_video:
+    if config.is_image_mode:
+        frame_reader = read_image_as_frame
+    elif config.full_video:
         frame_reader = lambda path, _num_frames: read_all_frames(path)
     else:
         frame_reader = read_consecutive_frames_random_start
@@ -139,7 +159,7 @@ def gather_vae_latents(config: VaeLatentConfig):
         frame_reader=frame_reader)
     videos_since_flush = 0
 
-    desc = "Encoding full videos" if config.full_video else "Encoding VAE latents"
+    desc = "Encoding images" if config.is_image_mode else "Encoding VAE latents"
     for idx, video_path in enumerate(tqdm(remaining, desc=desc)):
         frames = prefetcher.get_frames(idx)
         if frames is None:
@@ -192,7 +212,7 @@ def gather_vae_latents(config: VaeLatentConfig):
         "max_norm_multiple": config.max_norm_multiple,
         "total_tokens": writer.total_tokens,
         "num_shards": writer.shard_index,
-        "num_videos": len(video_paths),
+        "num_videos": len(input_paths),
         "save_dtype": "float32",
     }
     with open(os.path.join(config.output_dir, METADATA_FILENAME), "w") as f:
@@ -203,7 +223,8 @@ def gather_vae_latents(config: VaeLatentConfig):
 
 
 @click.command()
-@click.option("--video-dir", required=True)
+@click.option("--video-dir", default="", help="Directory of videos to encode")
+@click.option("--image-dir", default="", help="Directory of images to encode (e.g. ImageNet train)")
 @click.option("--output-dir", required=True)
 @click.option("--model-name", default="Lightricks/LTX-Video-0.9.5")
 @click.option("--device", default="cuda:0")
@@ -214,8 +235,10 @@ def gather_vae_latents(config: VaeLatentConfig):
 @click.option("--max-norm-multiple", default=10, type=int)
 @click.option("--prefetch-workers", default=4, type=int)
 @click.option("--full-video", is_flag=True, help="Encode entire videos in chunks instead of sampling frames")
-@click.option("--max-videos", default=0, type=int, help="Max videos to process (0 = all)")
+@click.option("--max-videos", default=0, type=int, help="Max inputs to process (0 = all)")
 def main(**kwargs):
+    if not kwargs["video_dir"] and not kwargs["image_dir"]:
+        raise click.UsageError("Provide either --video-dir or --image-dir")
     gather_vae_latents(VaeLatentConfig(**kwargs))
 
 

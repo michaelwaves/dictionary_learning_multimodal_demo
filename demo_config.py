@@ -61,8 +61,6 @@ class SparsityPenalties:
 
 num_tokens = 500_000_000
 
-print(f"NOTE: Training on {num_tokens} tokens")
-
 eval_num_inputs = 200
 random_seeds = [0]
 

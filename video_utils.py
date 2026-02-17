@@ -1,4 +1,4 @@
-"""Video I/O utilities for frame extraction and file discovery."""
+"""Video and image I/O utilities for frame extraction and file discovery."""
 
 import os
 import logging
@@ -6,6 +6,9 @@ from contextlib import contextmanager
 
 import av
 import numpy as np
+from PIL import Image
+
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp")
 
 logger = logging.getLogger(__name__)
 
@@ -113,17 +116,33 @@ def read_all_frames(video_path: str) -> list[np.ndarray]:
     return frames
 
 
-def scan_video_directory(video_dir: str | list[str]) -> list[str]:
-    """Recursively find all video files in one or more directories."""
-    if isinstance(video_dir, str):
-        video_dir = [video_dir]
+def read_image_as_frame(image_path: str, _num_frames: int = 1) -> list[np.ndarray]:
+    """Load an image and return it as a single-element frame list."""
+    image = Image.open(image_path).convert("RGB")
+    return [np.array(image)]
+
+
+def scan_directory(
+    directory: str | list[str], extensions: tuple[str, ...],
+) -> list[str]:
+    """Recursively find all files matching extensions in one or more directories."""
+    if isinstance(directory, str):
+        directory = [directory]
 
     paths = []
-    for directory in video_dir:
-        for root, _, files in os.walk(directory):
+    for d in directory:
+        for root, _, files in os.walk(d):
             for filename in sorted(files):
-                if filename.lower().endswith(VIDEO_EXTENSIONS):
+                if filename.lower().endswith(extensions):
                     paths.append(os.path.join(root, filename))
 
     paths.sort()
     return paths
+
+
+def scan_video_directory(video_dir: str | list[str]) -> list[str]:
+    return scan_directory(video_dir, VIDEO_EXTENSIONS)
+
+
+def scan_image_directory(image_dir: str | list[str]) -> list[str]:
+    return scan_directory(image_dir, IMAGE_EXTENSIONS)

@@ -60,7 +60,7 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
  python demo_video.py --activation_dir ./ltx_activations/encoder_down_blocks_0_resnets_3 --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 72000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
 
  
- python demo_video.py --activation_dir ./ltx_activations_vae --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 72000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
+ python demo_video.py --activation_dir ./ltx_activations_vae --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 23000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
 ```
 
  
@@ -70,6 +70,9 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
  python eval/visualize_features.py --sae-path video_saes/resid_post_layer_encoder.down_blocks.2.resnets.2/trainer_3/checkpoints/ae_11117.pt --video-path sample_videos/jam.mp4 --output-dir ./eval/output --hook-module encoder.down_blocks.2.resnets.2 --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
 
   python eval/visualize_features.py --sae-path video_saes/resid_post_layer_unknown --video-path sample_videos/jam.mp4 --output-dir ./eval/output/encoder  --topk 20 --min-count 10 --max-count 200  --display-frames 8 --sampling spaced --start 0.2
+
+
+    python eval/top_samples.py --sae-path /path/to/sae --video-dir /path/to/deepfake_videos --output-dir ./top_samples --num-frames 33  --samples-per-feature 10 --topk-features 20 --max-videos 100  # start small to test
 
  ```
 
