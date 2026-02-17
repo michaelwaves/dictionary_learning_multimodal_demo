@@ -40,6 +40,12 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
       --full-video \
       --max-videos 100
 
+    python gather_ltx_encoder_activations.py \
+      --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf \
+      --vae-type wan \
+      --model-name Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+      --num-frames 17
+
 ```
 
   # Stage 2: Train SAE (repeatable with different configs)
@@ -61,6 +67,12 @@ python gather_ltx_encoder_activations.py  --video-dir /mnt/nw/home/m.yu/repos/mu
 
  
  python demo_video.py --activation_dir ./ltx_activations_vae --save_dir video_saes  --architectures matryoshka_batch_top_k  --device cuda:0   --num_tokens 23000000  --shards_in_memory 4   --use_wandb   --save_checkpoints
+
+  python demo_video.py \
+      --activation_dir /mnt/nw/home/m.yu/repos/dictionary_learning_demo/activations/runs/2026-02-17_04-02-20 \
+      --architectures matryoshka_batch_top_k \
+      --use_wandb
+
 ```
 
  

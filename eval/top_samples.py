@@ -18,9 +18,19 @@ from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k imp
     MatryoshkaBatchTopKSAE,
 )
 from eval.heatmap import render_feature_heatmap
-from gather_ltx_activations import load_vae, multi_module_hooks, preprocess_frames
+from gather_utils import multi_module_hooks, preprocess_frames
 from gather_ltx_encoder_activations import chunk_frames_for_vae
 from video_utils import read_all_frames, scan_video_directory
+
+TEMPORAL_STRIDE = {"ltx": 8, "wan": 4}
+
+
+def load_model_vae(vae_model: str, vae_type: str, device: str):
+    if vae_type == "wan":
+        from wan_model import load_wan_vae
+        return load_wan_vae(vae_model, device)
+    from gather_ltx_activations import load_vae
+    return load_vae(vae_model, device, enable_tiling=False)
 
 
 @dataclass(order=True)
@@ -97,7 +107,7 @@ def encode_chunk_features(frames, vae, sae, hook_module, height, width, device):
 
 def scan_corpus(
     video_paths, vae, sae, hook_module,
-    chunk_size, height, width, device, samples_per_feature,
+    chunk_size, height, width, device, samples_per_feature, temporal_stride=8,
 ):
     tracker = TopChunkTracker(sae.dict_size, samples_per_feature)
     for video_path in tqdm(video_paths, desc="Scanning corpus"):
@@ -105,7 +115,7 @@ def scan_corpus(
             all_frames = read_all_frames(video_path)
         except Exception:
             continue
-        chunks = chunk_frames_for_vae(all_frames, chunk_size)
+        chunks = chunk_frames_for_vae(all_frames, chunk_size, temporal_stride)
         offset = 0
         for chunk in chunks:
             raw_count = min(chunk_size, len(all_frames) - offset)
@@ -216,6 +226,7 @@ def render_feature_grid(
 @click.option("--output-dir", default="top_samples", type=click.Path())
 @click.option("--hook-module", default=None)
 @click.option("--vae-model", default="Lightricks/LTX-Video-0.9.5")
+@click.option("--vae-type", default="ltx", type=click.Choice(["ltx", "wan"]))
 @click.option("--num-frames", default=33, type=int, help="Chunk size matching gather")
 @click.option("--samples-per-feature", default=10, type=int)
 @click.option("--topk-features", default=20, type=int)
@@ -225,7 +236,7 @@ def render_feature_grid(
 @click.option("--max-videos", default=0, type=int, help="0=all")
 @click.option("--device", default="cuda")
 def main(
-    sae_path, video_dir, output_dir, hook_module, vae_model, num_frames,
+    sae_path, video_dir, output_dir, hook_module, vae_model, vae_type, num_frames,
     samples_per_feature, topk_features, feature_indices, min_fire_count,
     thumb_height, max_videos, device,
 ):
@@ -233,8 +244,9 @@ def main(
         output_dir, "runs", datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
     os.makedirs(run_dir, exist_ok=True)
+    temporal_stride = TEMPORAL_STRIDE[vae_type]
 
-    vae = load_vae(vae_model, device, enable_tiling=False)
+    vae = load_model_vae(vae_model, vae_type, device)
     sae = MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device)
     sae.eval()
     video_paths = scan_video_directory(video_dir)
@@ -243,7 +255,7 @@ def main(
     click.echo(f"Scanning {len(video_paths)} videos...")
     tracker = scan_corpus(
         video_paths, vae, sae, hook_module,
-        num_frames, 256, 256, device, samples_per_feature,
+        num_frames, 256, 256, device, samples_per_feature, temporal_stride,
     )
     if feature_indices:
         indices = [int(x) for x in feature_indices.split(",")]
@@ -255,6 +267,7 @@ def main(
         "sae_path": os.path.abspath(sae_path),
         "video_dir": os.path.abspath(video_dir),
         "vae_model": vae_model,
+        "vae_type": vae_type,
         "hook_module": hook_module,
         "num_frames": num_frames,
         "num_videos_scanned": len(video_paths),

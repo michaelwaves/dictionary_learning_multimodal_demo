@@ -1,28 +1,29 @@
-"""Gather VAE latent means from LTX-Video for SAE training.
+"""Gather VAE encoder latent means for SAE training.
 
-Encodes videos through the LTX VAE and saves latent_dist.mean
-reshaped to (N, C) — one row per spatiotemporal position.
+Encodes videos through a VAE (LTX or Wan) and saves latent_dist.mean
+reshaped to (N, C) -- one row per spatiotemporal position.
 """
 
 import json
 import logging
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 import click
 import torch
 from tqdm import tqdm
 
-from gather_ltx_activations import (
+from gather_utils import (
     METADATA_FILENAME,
     FramePrefetcher,
     ProgressTracker,
     ShardWriter,
-    load_vae,
+    make_run_dir,
     preprocess_frames,
     remove_norm_outliers,
     reshape_vae_activation,
+    save_run_config,
 )
 from video_utils import (
     read_all_frames,
@@ -32,9 +33,19 @@ from video_utils import (
     scan_video_directory,
 )
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+TEMPORAL_STRIDE = {"ltx": 8, "wan": 4}
+
+
+def load_model_vae(model_name: str, vae_type: str, device: str):
+    if vae_type == "wan":
+        from wan_model import load_wan_vae
+        return load_wan_vae(model_name, device)
+    from gather_ltx_activations import load_vae
+    return load_vae(model_name, device, enable_tiling=False)
 
 
 @dataclass
@@ -43,6 +54,7 @@ class VaeLatentConfig:
     image_dir: str = ""
     output_dir: str = ""
     model_name: str = "Lightricks/LTX-Video-0.9.5"
+    vae_type: str = "ltx"
     device: str = "cuda:0"
     num_frames: int = 17
     height: int = 256
@@ -57,34 +69,31 @@ class VaeLatentConfig:
     def is_image_mode(self) -> bool:
         return bool(self.image_dir)
 
-
-def read_consecutive_frames_random_start(
-    video_path: str, num_frames: int,
-) -> list:
-    start_fraction = random.random() * 0.5
-    return read_consecutive_frames(video_path, num_frames, start_fraction)
+    @property
+    def temporal_stride(self) -> int:
+        return TEMPORAL_STRIDE[self.vae_type]
 
 
-def align_to_vae_frame_count(n: int) -> int:
-    """Round up to nearest valid VAE frame count where (result - 1) % 8 == 0."""
+def read_consecutive_frames_random_start(video_path: str, num_frames: int) -> list:
+    return read_consecutive_frames(video_path, num_frames, random.random() * 0.5)
+
+
+def align_to_vae_frame_count(n: int, temporal_stride: int = 8) -> int:
     if n <= 1:
         return 1
-    return ((n - 2) // 8 + 1) * 8 + 1
+    return ((n - 2) // temporal_stride + 1) * temporal_stride + 1
 
 
 MIN_VAE_CHUNK_FRAMES = 9
 
 
-def chunk_frames_for_vae(
-    frames: list, chunk_size: int,
-) -> list[list]:
-    """Split a full video's frames into VAE-aligned non-overlapping chunks."""
+def chunk_frames_for_vae(frames: list, chunk_size: int, temporal_stride: int = 8) -> list[list]:
     chunks = []
     for start in range(0, len(frames), chunk_size):
         chunk = frames[start:start + chunk_size]
         if len(chunk) < MIN_VAE_CHUNK_FRAMES:
             break
-        aligned_size = align_to_vae_frame_count(len(chunk))
+        aligned_size = align_to_vae_frame_count(len(chunk), temporal_stride)
         while len(chunk) < aligned_size:
             chunk.append(chunk[-1])
         chunks.append(chunk)
@@ -98,16 +107,8 @@ def encode_latent_mean(video_tensor: torch.Tensor, vae: torch.nn.Module) -> torc
 
 
 @torch.no_grad()
-def encode_full_video_in_chunks(
-    frames: list,
-    vae: torch.nn.Module,
-    chunk_size: int,
-    height: int,
-    width: int,
-    device: str,
-) -> torch.Tensor:
-    """Encode all frames by chunking into VAE-aligned segments."""
-    chunks = chunk_frames_for_vae(frames, chunk_size)
+def encode_full_video_in_chunks(frames, vae, chunk_size, height, width, device, temporal_stride=8):
+    chunks = chunk_frames_for_vae(frames, chunk_size, temporal_stride)
     activations = []
     for chunk in chunks:
         video_tensor = preprocess_frames(chunk, height, width, device)
@@ -121,14 +122,17 @@ def gather_vae_latents(config: VaeLatentConfig):
         input_paths = scan_image_directory(config.image_dir)
         if not input_paths:
             raise RuntimeError(f"No images found in {config.image_dir}")
-        logger.info(f"Found {len(input_paths)} images")
     else:
         input_paths = scan_video_directory(config.video_dir)
         if not input_paths:
             raise RuntimeError(f"No videos found in {config.video_dir}")
-        logger.info(f"Found {len(input_paths)} videos")
+    logger.info(f"Found {len(input_paths)} inputs")
 
+    if not config.output_dir:
+        config.output_dir = make_run_dir()
     os.makedirs(config.output_dir, exist_ok=True)
+    save_run_config(config.output_dir, asdict(config))
+
     progress = ProgressTracker(config.output_dir)
     remaining = [p for p in input_paths if not progress.is_done(p)]
     if config.max_videos > 0:
@@ -137,62 +141,52 @@ def gather_vae_latents(config: VaeLatentConfig):
     if not remaining:
         return
 
-    vae = load_vae(config.model_name, config.device, enable_tiling=False)
-
+    vae = load_model_vae(config.model_name, config.vae_type, config.device)
     dummy_frames = 1 if config.is_image_mode else 9
     dummy = torch.randn(1, 3, dummy_frames, 128, 128, device=config.device).clamp_(-1, 1)
     d_in = encode_latent_mean(dummy, vae).shape[-1]
-    logger.info(f"Latent d_in={d_in}")
     del dummy
 
     writer = ShardWriter(config.output_dir)
-
     if config.is_image_mode:
         frame_reader = read_image_as_frame
     elif config.full_video:
-        frame_reader = lambda path, _num_frames: read_all_frames(path)
+        frame_reader = lambda path, _: read_all_frames(path)
     else:
         frame_reader = read_consecutive_frames_random_start
 
-    prefetcher = FramePrefetcher(
-        remaining, config.num_frames, config.prefetch_workers,
-        frame_reader=frame_reader)
+    prefetcher = FramePrefetcher(remaining, config.num_frames, config.prefetch_workers, frame_reader)
     videos_since_flush = 0
-
     desc = "Encoding images" if config.is_image_mode else "Encoding VAE latents"
-    for idx, video_path in enumerate(tqdm(remaining, desc=desc)):
+
+    for idx, path in enumerate(tqdm(remaining, desc=desc)):
         frames = prefetcher.get_frames(idx)
         if frames is None:
-            progress.mark_done(video_path)
+            progress.mark_done(path)
             continue
-
         try:
             if config.full_video:
                 activations = encode_full_video_in_chunks(
-                    frames, vae, config.num_frames,
-                    config.height, config.width, config.device,
+                    frames, vae, config.num_frames, config.height, config.width,
+                    config.device, config.temporal_stride,
                 )
             else:
-                video_tensor = preprocess_frames(
-                    frames, config.height, config.width, config.device)
+                video_tensor = preprocess_frames(frames, config.height, config.width, config.device)
                 activations = encode_latent_mean(video_tensor, vae)
                 del video_tensor
         except Exception as e:
-            logger.warning(f"Failed {video_path}: {e}")
-            progress.mark_done(video_path)
+            logger.warning(f"Failed {path}: {e}")
+            progress.mark_done(path)
             continue
 
         if config.max_norm_multiple > 0:
-            activations = remove_norm_outliers(
-                activations, config.max_norm_multiple)
+            activations = remove_norm_outliers(activations, config.max_norm_multiple)
         if activations.numel() > 0:
             writer.append(activations)
-
         del activations
         torch.cuda.empty_cache()
-        progress.mark_done(video_path)
+        progress.mark_done(path)
         videos_since_flush += 1
-
         if videos_since_flush >= config.shard_size:
             writer.flush()
             progress.save()
@@ -203,30 +197,25 @@ def gather_vae_latents(config: VaeLatentConfig):
     prefetcher.shutdown()
 
     metadata = {
-        "model_name": config.model_name,
+        "model_name": config.model_name, "vae_type": config.vae_type,
         "hook_target": "vae_latent_mean",
-        "d_model": d_in,
-        "num_frames": config.num_frames,
-        "height": config.height,
-        "width": config.width,
+        "d_model": d_in, "num_frames": config.num_frames,
+        "height": config.height, "width": config.width,
         "max_norm_multiple": config.max_norm_multiple,
-        "total_tokens": writer.total_tokens,
-        "num_shards": writer.shard_index,
-        "num_videos": len(input_paths),
-        "save_dtype": "float32",
+        "total_tokens": writer.total_tokens, "num_shards": writer.shard_index,
+        "num_videos": len(input_paths), "save_dtype": "float32",
     }
     with open(os.path.join(config.output_dir, METADATA_FILENAME), "w") as f:
         json.dump(metadata, f, indent=2)
-
-    logger.info(
-        f"Done. {writer.total_tokens} tokens, {writer.shard_index} shards (d_in={d_in})")
+    logger.info(f"Done. {writer.total_tokens} tokens, {writer.shard_index} shards. Output: {config.output_dir}")
 
 
 @click.command()
-@click.option("--video-dir", default="", help="Directory of videos to encode")
-@click.option("--image-dir", default="", help="Directory of images to encode (e.g. ImageNet train)")
-@click.option("--output-dir", required=True)
+@click.option("--video-dir", default="")
+@click.option("--image-dir", default="")
+@click.option("--output-dir", default="")
 @click.option("--model-name", default="Lightricks/LTX-Video-0.9.5")
+@click.option("--vae-type", default="ltx", type=click.Choice(["ltx", "wan"]))
 @click.option("--device", default="cuda:0")
 @click.option("--num-frames", default=17, type=int)
 @click.option("--height", default=256, type=int)
@@ -234,8 +223,8 @@ def gather_vae_latents(config: VaeLatentConfig):
 @click.option("--shard-size", default=50, type=int)
 @click.option("--max-norm-multiple", default=10, type=int)
 @click.option("--prefetch-workers", default=4, type=int)
-@click.option("--full-video", is_flag=True, help="Encode entire videos in chunks instead of sampling frames")
-@click.option("--max-videos", default=0, type=int, help="Max inputs to process (0 = all)")
+@click.option("--full-video", is_flag=True)
+@click.option("--max-videos", default=0, type=int)
 def main(**kwargs):
     if not kwargs["video_dir"] and not kwargs["image_dir"]:
         raise click.UsageError("Provide either --video-dir or --image-dir")

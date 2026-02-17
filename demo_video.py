@@ -25,6 +25,7 @@ import torch.multiprocessing as mp
 import demo_config
 from disk_buffer import DiskActivationBuffer
 from dictionary_learning.dictionary_learning.training import trainSAE
+from gather_utils import make_run_dir, save_run_config
 
 
 def parse_args():
@@ -33,8 +34,8 @@ def parse_args():
     )
     parser.add_argument("--activation_dir", type=str, required=True,
                         help="Directory with sharded activations and metadata.json")
-    parser.add_argument("--save_dir", type=str, required=True,
-                        help="Where to save trained SAEs")
+    parser.add_argument("--save_dir", type=str, default="",
+                        help="Where to save trained SAEs (default: video_saes/runs/<datetime>)")
     parser.add_argument("--architectures", type=str, nargs="+", required=True,
                         choices=[e.value for e in demo_config.TrainerType],
                         help="SAE architectures to train")
@@ -76,6 +77,9 @@ def run_video_sae_training(
     save_checkpoints: bool = False,
     shards_in_memory: int = 4,
 ):
+    if not save_dir:
+        save_dir = make_run_dir(base="video_saes/runs")
+
     metadata = load_activation_metadata(activation_dir)
     activation_dim = metadata["d_model"]
     model_name = metadata["model_name"]
@@ -88,8 +92,16 @@ def run_video_sae_training(
 
     save_steps = compute_checkpoint_steps(steps) if save_checkpoints else None
 
+    save_run_config(save_dir, {
+        "activation_dir": activation_dir, "model_name": model_name,
+        "activation_dim": activation_dim, "layer": layer,
+        "architectures": architectures, "num_tokens": num_tokens,
+        "steps": steps, "sae_batch_size": sae_batch_size,
+    })
+
     print(f"Training config: {activation_dim=}, {layer=}, {steps=}, {sae_batch_size=}")
     print(f"Activation source: {metadata['total_tokens']} tokens from {metadata['num_shards']} shards")
+    print(f"Save dir: {save_dir}")
 
     activation_buffer = DiskActivationBuffer(
         activation_dir=activation_dir,
@@ -114,7 +126,7 @@ def run_video_sae_training(
 
     print(f"Training {len(trainer_configs)} SAE(s)")
     assert len(trainer_configs) > 0
-    full_save_dir = f"{save_dir}/{submodule_name}"
+    full_save_dir = os.path.join(save_dir, submodule_name)
 
     if not dry_run:
         trainSAE(

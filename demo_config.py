@@ -122,7 +122,10 @@ LLM_CONFIG = {
     ),
     "Lightricks/LTX-Video-0.9.5": LLMConfig(
         llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
-    )
+    ),
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers": LLMConfig(
+        llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
+    ),
 }
 
 

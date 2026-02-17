@@ -12,19 +12,23 @@ from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k imp
     MatryoshkaBatchTopKSAE,
 )
 from eval.heatmap import render_feature_heatmap, sample_frame_indices
-from gather_ltx_activations import load_vae, multi_module_hooks, preprocess_frames
+from gather_utils import multi_module_hooks, preprocess_frames
 from gather_ltx_encoder_activations import chunk_frames_for_vae
 from video_utils import read_all_frames, read_consecutive_frames, read_video_pyav
 
+TEMPORAL_STRIDE = {"ltx": 8, "wan": 4}
+
+
+def load_model_vae(vae_model: str, vae_type: str, device: str):
+    if vae_type == "wan":
+        from wan_model import load_wan_vae
+        return load_wan_vae(vae_model, device)
+    from gather_ltx_activations import load_vae
+    return load_vae(vae_model, device, enable_tiling=False)
+
 
 @torch.no_grad()
-def extract_feature_activations(
-    video_tensor: torch.Tensor,
-    vae: torch.nn.Module,
-    sae: MatryoshkaBatchTopKSAE,
-    hook_module: str | None,
-) -> tuple[torch.Tensor, tuple[int, ...]]:
-    """Run VAE encode + SAE encode, return (N, dict_size) features and spatial dims."""
+def extract_feature_activations(video_tensor, vae, sae, hook_module):
     if hook_module:
         with multi_module_hooks(vae, [hook_module]) as captured:
             vae.encode(video_tensor)
@@ -41,95 +45,52 @@ def extract_feature_activations(
         flat = activation.permute(0, 2, 3, 1).reshape(-1, channels)
     else:
         raise ValueError(f"Unexpected activation shape: {activation.shape}")
-
     feature_activations = sae.encode(flat.to(sae.W_enc.device))
     return feature_activations, spatial_dims
 
 
 @torch.no_grad()
 def extract_chunked_feature_activations(
-    all_frames: list,
-    vae: torch.nn.Module,
-    sae: MatryoshkaBatchTopKSAE,
-    hook_module: str | None,
-    chunk_size: int,
-    height: int,
-    width: int,
-    device: str,
-) -> tuple[torch.Tensor, int, int, int]:
-    """Encode a full video in VAE-aligned chunks through VAE + SAE."""
-    chunks = chunk_frames_for_vae(all_frames, chunk_size)
+    all_frames, vae, sae, hook_module, chunk_size, height, width, device, temporal_stride=8,
+):
+    chunks = chunk_frames_for_vae(all_frames, chunk_size, temporal_stride)
     if not chunks:
         raise ValueError(f"Video too short to chunk ({len(all_frames)} frames)")
-
     all_features = []
     lat_h = lat_w = 0
-
     for chunk in chunks:
         video_tensor = preprocess_frames(chunk, height, width, device)
-        features, (_, h, w) = extract_feature_activations(
-            video_tensor, vae, sae, hook_module,
-        )
+        features, (_, h, w) = extract_feature_activations(video_tensor, vae, sae, hook_module)
         all_features.append(features)
         lat_h, lat_w = h, w
         del video_tensor
         torch.cuda.empty_cache()
-
     feature_acts = torch.cat(all_features, dim=0)
     total_temporal = feature_acts.shape[0] // (lat_h * lat_w)
     return feature_acts, total_temporal, lat_h, lat_w
 
 
-def select_top_features(
-    feature_activations: torch.Tensor,
-    min_count: int,
-    max_count: int,
-    topk: int,
-) -> torch.Tensor:
-    """Filter by fire count range, rank by total magnitude, return top-k indices."""
+def select_top_features(feature_activations, min_count, max_count, topk):
     fire_counts = (feature_activations > 0).sum(dim=0)
     total_magnitude = feature_activations.sum(dim=0)
-
     in_range = (fire_counts >= min_count) & (fire_counts <= max_count)
     masked_magnitude = torch.where(in_range, total_magnitude, torch.tensor(-1.0))
-
-    num_valid = in_range.sum().item()
-    k = min(topk, num_valid)
+    k = min(topk, in_range.sum().item())
     if k == 0:
         return torch.tensor([], dtype=torch.long)
-
     return masked_magnitude.topk(k).indices
 
 
-def load_display_frames(
-    video_path: str,
-    num_display: int,
-    sampling: str,
-    num_vae_frames: int,
-    start_fraction: float,
-) -> tuple[list, list[int]]:
-    """Load display frames and compute their latent temporal indices.
-
-    Returns:
-        display_frames: List of (H, W, 3) uint8 arrays.
-        latent_indices: Latent temporal index for each display frame.
-    """
-    num_latent = (num_vae_frames - 1) // 8 + 1
-
+def load_display_frames(video_path, num_display, sampling, num_vae_frames, start_fraction, temporal_stride=8):
+    num_latent = (num_vae_frames - 1) // temporal_stride + 1
     if sampling == "consecutive":
-        display_frames = read_consecutive_frames(
-            video_path, num_display, start_fraction,
-        )
+        display_frames = read_consecutive_frames(video_path, num_display, start_fraction)
         latent_indices = [0] * num_display
     else:
         all_frames = read_video_pyav(video_path, num_vae_frames, start_fraction)
         selected = sample_frame_indices(len(all_frames), num_display, sampling)
         display_frames = [all_frames[i] for i in selected]
-        latent_indices = [
-            min(int(i * num_latent / len(all_frames)), num_latent - 1)
-            for i in selected
-        ]
-
+        latent_indices = [min(int(i * num_latent / len(all_frames)), num_latent - 1) for i in selected]
     return display_frames, latent_indices
 
 
@@ -137,64 +98,51 @@ def load_display_frames(
 @click.option("--sae-path", required=True, type=click.Path(exists=True))
 @click.option("--video-path", required=True, type=click.Path(exists=True))
 @click.option("--output-dir", required=True, type=click.Path())
-@click.option("--hook-module", default=None, help="VAE layer to hook (omit for full encoder output)")
+@click.option("--hook-module", default=None)
 @click.option("--vae-model", default="Lightricks/LTX-Video-0.9.5")
-@click.option("--num-frames", default=25, help="Frames to feed VAE ((n-1) %% 8 == 0)")
-@click.option("--display-frames", default=8, help="Frames shown per feature image")
-@click.option(
-    "--sampling", default="spaced",
-    type=click.Choice(["consecutive", "spaced", "random"]),
-)
-@click.option("--min-count", default=10, help="Min fire count to include a feature")
-@click.option("--max-count", default=200, help="Max fire count to include a feature")
-@click.option("--topk", default=20, help="Number of top features to visualize")
-@click.option("--start", default=0.0, help="Skip this fraction of the video (0.0-1.0)")
-@click.option("--full-video", is_flag=True, help="Encode entire video in chunks (matches full-video gathering)")
+@click.option("--vae-type", default="ltx", type=click.Choice(["ltx", "wan"]))
+@click.option("--num-frames", default=25)
+@click.option("--display-frames", default=8)
+@click.option("--sampling", default="spaced", type=click.Choice(["consecutive", "spaced", "random"]))
+@click.option("--min-count", default=10)
+@click.option("--max-count", default=200)
+@click.option("--topk", default=20)
+@click.option("--start", default=0.0)
+@click.option("--full-video", is_flag=True)
 @click.option("--device", default="cuda")
 def main(
-    sae_path, video_path, output_dir, hook_module, vae_model,
+    sae_path, video_path, output_dir, hook_module, vae_model, vae_type,
     num_frames, display_frames, sampling, min_count, max_count, topk, start,
     full_video, device,
 ):
     os.makedirs(output_dir, exist_ok=True)
+    temporal_stride = TEMPORAL_STRIDE[vae_type]
 
     click.echo("Loading models...")
-    vae = load_vae(vae_model, device, enable_tiling=False)
+    vae = load_model_vae(vae_model, vae_type, device)
     sae = MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device)
     sae.eval()
 
     if full_video:
         click.echo("Reading all frames for chunked encoding...")
         all_frames = read_all_frames(video_path)
-        click.echo(f"  {len(all_frames)} frames, chunk_size={num_frames}")
-
         feature_acts, temporal, lat_h, lat_w = extract_chunked_feature_activations(
             all_frames, vae, sae, hook_module,
             chunk_size=num_frames, height=256, width=256, device=device,
+            temporal_stride=temporal_stride,
         )
-
         selected = sample_frame_indices(len(all_frames), display_frames, sampling)
         frames_to_show = [all_frames[i] for i in selected]
-        latent_indices = [
-            min(i * temporal // len(all_frames), temporal - 1) for i in selected
-        ]
+        latent_indices = [min(i * temporal // len(all_frames), temporal - 1) for i in selected]
     else:
-        click.echo(f"Reading {num_frames} frames for VAE (start={start:.0%})...")
         vae_frames = read_video_pyav(video_path, num_frames, start)
         video_tensor = preprocess_frames(vae_frames, height=256, width=256, device=device)
-
-        click.echo("Extracting feature activations...")
-        feature_acts, spatial_dims = extract_feature_activations(
-            video_tensor, vae, sae, hook_module,
-        )
+        feature_acts, spatial_dims = extract_feature_activations(video_tensor, vae, sae, hook_module)
         temporal, lat_h, lat_w = spatial_dims
-
-        click.echo(f"Loading {display_frames} display frames ({sampling})...")
         frames_to_show, latent_indices = load_display_frames(
-            video_path, display_frames, sampling, num_frames, start,
+            video_path, display_frames, sampling, num_frames, start, temporal_stride,
         )
 
-    click.echo("Selecting top features...")
     top_indices = select_top_features(feature_acts, min_count, max_count, topk)
     if len(top_indices) == 0:
         click.echo(f"No features fire between {min_count} and {max_count} times.")
@@ -206,7 +154,6 @@ def main(
         idx = feature_idx.item()
         count = fire_counts[idx].item()
         activation_map = feature_acts[:, idx].reshape(temporal, lat_h, lat_w)
-
         image = render_feature_heatmap(activation_map, frames_to_show, latent_indices)
         image.save(os.path.join(output_dir, f"feature_{idx:04d}_count{count}.png"))
 
