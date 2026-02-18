@@ -66,6 +66,13 @@ def compute_checkpoint_steps(total_steps: int) -> list[int]:
     return sorted(int(total_steps * frac) for frac in desired_fractions)
 
 
+def _derive_submodule_name(metadata: dict) -> str:
+    if "layer" in metadata:
+        return f"layer_{metadata['layer']}"
+    hook_module = metadata.get("hook_module", metadata.get("hook_target", "unknown"))
+    return hook_module.replace(".", "_")
+
+
 def run_video_sae_training(
     activation_dir: str,
     save_dir: str,
@@ -83,8 +90,8 @@ def run_video_sae_training(
     metadata = load_activation_metadata(activation_dir)
     activation_dim = metadata["d_model"]
     model_name = metadata["model_name"]
-    layer = metadata.get("layer", metadata.get("hook_module", "unknown"))
-    submodule_name = metadata.get("submodule_name", f"resid_post_layer_{layer}")
+    submodule_name = _derive_submodule_name(metadata)
+    layer = metadata.get("layer", metadata.get("hook_module", submodule_name))
 
     sae_batch_size = demo_config.LLM_CONFIG[model_name].sae_batch_size
     steps = compute_training_steps(num_tokens, sae_batch_size)

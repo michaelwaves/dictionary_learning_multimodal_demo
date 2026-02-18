@@ -126,6 +126,9 @@ LLM_CONFIG = {
     "Wan-AI/Wan2.2-TI2V-5B-Diffusers": LLMConfig(
         llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
     ),
+    "facebook/vjepa2-vitl-fpc64-256": LLMConfig(
+        llm_batch_size=1, context_length=4096, sae_batch_size=2048, dtype=t.bfloat16
+    ),
 }
 
 
