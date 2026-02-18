@@ -1,19 +1,17 @@
-"""Gather video activations from vision-language models (Qwen3-VL).
-
-Hooks on language model residual stream layers, filters to visual-only
-token positions, and saves sharded activations for SAE training.
+"""Gather video activations from vision models (Qwen3-VL, VJEPA2).
 
 Usage:
     python gather_vl_activations.py \
-        --video-dir /path/to/videos \
-        --layers 12 18 24 \
-        --device cuda:0
+        --model-type qwen --video-dir /path/to/videos --layers 12 18 24
+
+    python gather_vl_activations.py \
+        --model-type vjepa --video-dir /path/to/videos --layers 8 16 23
 """
 
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 import click
 import torch
@@ -23,23 +21,26 @@ from gather_utils import (
     METADATA_FILENAME, FramePrefetcher, ProgressTracker, ShardWriter,
     _DTYPE_MAP, make_run_dir, remove_norm_outliers, save_run_config,
 )
-from qwen_model import (
-    build_chat_text, load_qwen_model_and_processor, move_inputs_to_device,
-    multi_layer_hooks, prepare_video_inputs, select_visual_tokens,
-)
 from video_utils import scan_video_directory
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+DEFAULT_MODEL_NAMES = {
+    "qwen": "Qwen/Qwen3-VL-8B-Instruct",
+    "vjepa": "facebook/vjepa2-vitl-fpc64-256",
+}
+DEFAULT_NUM_FRAMES = {"qwen": 16, "vjepa": 64}
+
 
 @dataclass
-class VLGatherConfig:
-    model_name: str = "Qwen/Qwen3-VL-8B-Instruct"
+class VisionGatherConfig:
+    model_type: str = "qwen"
+    model_name: str = ""
     video_dir: str = ""
     output_dir: str = ""
     layers: list[int] = None
-    num_frames: int = 16
+    num_frames: int = 0
     prompt: str = "Describe what happens in this video."
     device: str = "cuda:0"
     shard_size: int = 50
@@ -47,12 +48,41 @@ class VLGatherConfig:
     prefetch_workers: int = 4
     dtype: str = "bfloat16"
 
+    def __post_init__(self):
+        if not self.model_name:
+            self.model_name = DEFAULT_MODEL_NAMES[self.model_type]
+        if self.num_frames == 0:
+            self.num_frames = DEFAULT_NUM_FRAMES[self.model_type]
+
     @property
     def torch_dtype(self) -> torch.dtype:
         return _DTYPE_MAP.get(self.dtype, torch.bfloat16)
 
 
-def gather_vl_activations(config: VLGatherConfig):
+def _load_model_and_get_d_model(config: VisionGatherConfig):
+    if config.model_type == "vjepa":
+        from vjepa_model import load_vjepa_model_and_processor
+        model, processor = load_vjepa_model_and_processor(
+            config.model_name, config.torch_dtype, config.device,
+        )
+        return model, processor, model.config.hidden_size
+    from qwen_model import load_qwen_model_and_processor
+    model, processor = load_qwen_model_and_processor(
+        config.model_name, config.torch_dtype, config.device, config.num_frames,
+    )
+    d_model = getattr(model.config, "hidden_size", None) or model.config.text_config.hidden_size
+    return model, processor, d_model
+
+
+def _forward_pass(config: VisionGatherConfig, model, processor, frames):
+    if config.model_type == "vjepa":
+        from vjepa_model import run_vjepa_forward
+        return run_vjepa_forward(model, processor, frames, config.layers, config.device)
+    from qwen_model import run_qwen_forward
+    return run_qwen_forward(model, processor, frames, config.prompt, config.layers)
+
+
+def gather_vl_activations(config: VisionGatherConfig):
     video_paths = scan_video_directory(config.video_dir)
     if not video_paths:
         raise RuntimeError(f"No video files found in {config.video_dir}")
@@ -65,18 +95,11 @@ def gather_vl_activations(config: VLGatherConfig):
 
     progress = ProgressTracker(config.output_dir)
     remaining = [p for p in video_paths if not progress.is_done(p)]
-    logger.info(f"Already processed: {len(video_paths) - len(remaining)}, remaining: {len(remaining)}")
+    logger.info(f"Remaining: {len(remaining)} / {len(video_paths)}")
     if not remaining:
         return
 
-    model, processor = load_qwen_model_and_processor(
-        config.model_name, config.torch_dtype, config.device, config.num_frames,
-    )
-    model_device = next(model.parameters()).device
-    video_pad_token_id = processor.tokenizer.convert_tokens_to_ids("<|video_pad|>")
-    chat_text = build_chat_text(processor, config.prompt)
-    d_model = getattr(model.config, "hidden_size", None) or model.config.text_config.hidden_size
-
+    model, processor, d_model = _load_model_and_get_d_model(config)
     shard_writers = {
         layer: ShardWriter(os.path.join(config.output_dir, f"layer_{layer}"))
         for layer in config.layers
@@ -84,37 +107,27 @@ def gather_vl_activations(config: VLGatherConfig):
     prefetcher = FramePrefetcher(remaining, config.num_frames, config.prefetch_workers)
     videos_since_flush = 0
 
-    for idx, video_path in enumerate(tqdm(remaining, desc="Gathering VL activations")):
+    for idx, video_path in enumerate(tqdm(remaining, desc=f"Gathering {config.model_type}")):
         frames = prefetcher.get_frames(idx)
         if frames is None:
             progress.mark_done(video_path)
             continue
-        inputs = prepare_video_inputs(processor, frames, chat_text)
-        if inputs is None:
+        try:
+            activations = _forward_pass(config, model, processor, frames)
+        except Exception as e:
+            logger.warning(f"Failed {video_path}: {e}")
             progress.mark_done(video_path)
             continue
-        inputs = move_inputs_to_device(inputs, model_device)
-        input_ids = inputs["input_ids"]
-
-        with multi_layer_hooks(model, config.layers) as captured:
-            try:
-                with torch.no_grad():
-                    model(**inputs)
-            except Exception as e:
-                logger.warning(f"Forward pass failed for {video_path}: {e}")
-                progress.mark_done(video_path)
-                continue
 
         for layer_idx in config.layers:
-            if layer_idx not in captured:
-                continue
-            visual_acts = select_visual_tokens(captured[layer_idx], input_ids, video_pad_token_id)
-            if config.max_norm_multiple > 0 and visual_acts.numel() > 0:
-                visual_acts = remove_norm_outliers(visual_acts, config.max_norm_multiple)
-            if visual_acts.numel() > 0:
-                shard_writers[layer_idx].append(visual_acts)
+            act = activations.get(layer_idx)
+            if act is not None and act.numel() > 0:
+                if config.max_norm_multiple > 0:
+                    act = remove_norm_outliers(act, config.max_norm_multiple)
+                if act.numel() > 0:
+                    shard_writers[layer_idx].append(act)
 
-        del captured, inputs
+        del activations
         torch.cuda.empty_cache()
         progress.mark_done(video_path)
         videos_since_flush += 1
@@ -131,9 +144,8 @@ def gather_vl_activations(config: VLGatherConfig):
 
     for layer_idx, writer in shard_writers.items():
         metadata = {
-            "model_name": config.model_name, "layer": layer_idx,
-            "d_model": d_model, "num_frames": config.num_frames,
-            "prompt": config.prompt, "filter_mode": "visual_only",
+            "model_name": config.model_name, "model_type": config.model_type,
+            "layer": layer_idx, "d_model": d_model, "num_frames": config.num_frames,
             "max_norm_multiple": config.max_norm_multiple,
             "total_tokens": writer.total_tokens, "num_shards": writer.shard_index,
             "num_videos": len(video_paths), "save_dtype": "float32",
@@ -145,11 +157,12 @@ def gather_vl_activations(config: VLGatherConfig):
 
 
 @click.command()
-@click.option("--model-name", default="Qwen/Qwen3-VL-8B-Instruct")
+@click.option("--model-type", default="qwen", type=click.Choice(["qwen", "vjepa"]))
+@click.option("--model-name", default="")
 @click.option("--video-dir", required=True)
 @click.option("--output-dir", default="")
-@click.option("--layers", required=True, type=int, multiple=True)
-@click.option("--num-frames", default=16, type=int)
+@click.option("--layers", required=True, type=str, help="Comma-separated layer indices, e.g. 8,16,23")
+@click.option("--num-frames", default=0, type=int)
 @click.option("--prompt", default="Describe what happens in this video.")
 @click.option("--device", default="cuda:0")
 @click.option("--shard-size", default=50, type=int)
@@ -157,8 +170,8 @@ def gather_vl_activations(config: VLGatherConfig):
 @click.option("--prefetch-workers", default=4, type=int)
 @click.option("--dtype", default="bfloat16", type=click.Choice(["float16", "bfloat16", "float32"]))
 def main(**kwargs):
-    kwargs["layers"] = list(kwargs["layers"])
-    gather_vl_activations(VLGatherConfig(**kwargs))
+    kwargs["layers"] = [int(x) for x in kwargs["layers"].split(",")]
+    gather_vl_activations(VisionGatherConfig(**kwargs))
 
 
 if __name__ == "__main__":

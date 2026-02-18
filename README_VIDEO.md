@@ -26,11 +26,11 @@ python gather_diffusion_activations.py \
     --video-dir /path/to/videos
 ```
 
-Vision-language models (Qwen3-VL):
+Vision models (Qwen3-VL, VJEPA2):
 ```sh
-python gather_vl_activations.py \
-    --video-dir /path/to/videos \
-    --layers 12 18 24
+
+      python gather_vl_activations.py --model-type vjepa --video-dir  /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --layers 8,16,23
+
 ```
 
 ## Stage 2: Train SAE

@@ -3,6 +3,7 @@
 import logging
 from contextlib import contextmanager
 
+import numpy as np
 import torch
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
@@ -43,6 +44,34 @@ def move_inputs_to_device(inputs: dict, device: torch.device) -> dict:
 
 def select_visual_tokens(activations: torch.Tensor, input_ids: torch.Tensor, video_pad_token_id: int):
     return activations[input_ids == video_pad_token_id]
+
+
+def run_qwen_forward(
+    model: torch.nn.Module,
+    processor: AutoProcessor,
+    frames: list[np.ndarray],
+    prompt: str,
+    layers: list[int],
+) -> dict[int, torch.Tensor]:
+    chat_text = build_chat_text(processor, prompt)
+    inputs = prepare_video_inputs(processor, frames, chat_text)
+    if inputs is None:
+        return {}
+    device = next(model.parameters()).device
+    inputs = move_inputs_to_device(inputs, device)
+    input_ids = inputs["input_ids"]
+    video_pad_token_id = processor.tokenizer.convert_tokens_to_ids("<|video_pad|>")
+
+    with multi_layer_hooks(model, layers) as captured:
+        with torch.no_grad():
+            model(**inputs)
+
+    result = {}
+    for layer_idx in layers:
+        if layer_idx in captured:
+            act = select_visual_tokens(captured[layer_idx], input_ids, video_pad_token_id)
+            result[layer_idx] = act.float()
+    return result
 
 
 @contextmanager
