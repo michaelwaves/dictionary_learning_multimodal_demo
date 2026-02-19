@@ -31,6 +31,7 @@ dependencies = [
     "huggingface-hub>=1.4.1",
     "imageio>=2.37.2",
     "imageio-ffmpeg>=0.6.0",
+    "opencv-python>=4.13.0.92",
 ]
 
 [tool.pyright]
