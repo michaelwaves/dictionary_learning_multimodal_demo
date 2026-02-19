@@ -4,7 +4,7 @@ import cv2
 from transformers import LlavaNextVideoForConditionalGeneration, LlavaNextVideoProcessor
 from dictionary_learning.dictionary_learning.dictionary import JumpReluAutoEncoder
 from safetensors.torch import load_file
-from video_utils import read_video_pyav
+from video_utils import read_all_frames, read_video_pyav
 
 SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-04_llava/sae_weights.safetensors"
 VIDEO_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4"
@@ -12,7 +12,6 @@ MODEL = "llava-hf/LLaVA-NeXT-Video-7B-hf"
 HOOK_LAYER = 16
 D_MODEL = 4096
 D_SAE = 65536
-NUM_FRAMES = 8
 DEVICE = "cuda"
 PROMPT = "USER: <video>\nDescribe this video.\nASSISTANT:"
 feature_ids = range(0, 1000, 10)
@@ -34,7 +33,7 @@ processor = LlavaNextVideoProcessor.from_pretrained(MODEL)
 sae = load_sae(SAE_PATH, D_MODEL, D_SAE, DEVICE)
 
 print("Reading video")
-video_frames = np.stack(read_video_pyav(VIDEO_PATH, NUM_FRAMES))
+video_frames = np.stack(read_all_frames(VIDEO_PATH))
 inputs = processor(text=PROMPT, videos=[
                    video_frames], return_tensors="pt").to(DEVICE)
 
@@ -67,35 +66,40 @@ print(
     f"active feature ids (top 20): {feats.sum(dim=0).topk(20).indices.tolist()}")
 
 input_ids = inputs["input_ids"].squeeze()
-placeholder_mask = input_ids == model.config.image_token_index
+placeholder_mask = input_ids == model.config.video_token_index
 video_start = placeholder_mask.nonzero()[0].item()
 num_text_tokens = len(input_ids) - placeholder_mask.sum().item()
 num_video_tokens = act.shape[0] - num_text_tokens
-tokens_per_frame = num_video_tokens // NUM_FRAMES
+num_model_frames = inputs["pixel_values_videos"].shape[1]
+tokens_per_frame = num_video_tokens // num_model_frames
 H_P = W_P = int(tokens_per_frame ** 0.5)
-print(f"text tokens: {num_text_tokens}, video tokens: {num_video_tokens}, per frame: {tokens_per_frame} ({H_P}x{W_P})")
+print(
+    f"text tokens: {num_text_tokens}, video tokens: {num_video_tokens}, "
+    f"model frames: {num_model_frames}, per frame: {tokens_per_frame} ({H_P}x{W_P})")
 
-video_feats = feats[video_start:video_start + NUM_FRAMES * H_P * W_P]
+video_feats = feats[video_start:video_start + num_model_frames * H_P * W_P]
+num_all_frames = len(video_frames)
 H_VID, W_VID = video_frames.shape[1], video_frames.shape[2]
-T_P = NUM_FRAMES
+fps = cv2.VideoCapture(VIDEO_PATH).get(cv2.CAP_PROP_FPS)
 
 for feature_id in feature_ids:
     feat_map = video_feats[:, feature_id].reshape(
-        T_P, H_P, W_P).cpu().float().detach().numpy()
+        num_model_frames, H_P, W_P).cpu().float().detach().numpy()
+    feat_max = feat_map.max() + 1e-8
 
     out = cv2.VideoWriter(
         f"export/out_{feature_id}.mp4",
-        cv2.VideoWriter_fourcc(*"mp4v"), 4, (W_VID, H_VID),
+        cv2.VideoWriter_fourcc(*"mp4v"), fps, (W_VID, H_VID),
     )
 
     for t, frame in enumerate(video_frames):
-        heatmap = cv2.resize(feat_map[t], (W_VID, H_VID))
-        heatmap = (heatmap / (feat_map.max() + 1e-8) * 255).astype(np.uint8)
+        model_t = int(t * num_model_frames / num_all_frames)
+        model_t = min(model_t, num_model_frames - 1)
+        heatmap = cv2.resize(feat_map[model_t], (W_VID, H_VID))
+        heatmap = (heatmap / feat_max * 255).astype(np.uint8)
         colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
         blended = cv2.addWeighted(
             frame[:, :, ::-1].copy(), 0.6, colored, 0.4, 0)
         out.write(blended)
 
     out.release()
-
-breakpoint()

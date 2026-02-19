@@ -23,12 +23,14 @@ from gather_utils import (
 )
 from video_utils import scan_video_directory
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAMES = {
     "qwen": "Qwen/Qwen3-VL-8B-Instruct",
     "vjepa": "facebook/vjepa2-vitl-fpc64-256",
+    "llava": "llava-hf/LLaVA-NeXT-Video-7B-hf"
 }
 DEFAULT_NUM_FRAMES = {"qwen": 16, "vjepa": 64}
 
@@ -70,7 +72,8 @@ def _load_model_and_get_d_model(config: VisionGatherConfig):
     model, processor = load_qwen_model_and_processor(
         config.model_name, config.torch_dtype, config.device, config.num_frames,
     )
-    d_model = getattr(model.config, "hidden_size", None) or model.config.text_config.hidden_size
+    d_model = getattr(model.config, "hidden_size",
+                      None) or model.config.text_config.hidden_size
     return model, processor, d_model
 
 
@@ -104,7 +107,8 @@ def gather_vl_activations(config: VisionGatherConfig):
         layer: ShardWriter(os.path.join(config.output_dir, f"layer_{layer}"))
         for layer in config.layers
     }
-    prefetcher = FramePrefetcher(remaining, config.num_frames, config.prefetch_workers)
+    prefetcher = FramePrefetcher(
+        remaining, config.num_frames, config.prefetch_workers)
     videos_since_flush = 0
 
     for idx, video_path in enumerate(tqdm(remaining, desc=f"Gathering {config.model_type}")):
@@ -152,7 +156,8 @@ def gather_vl_activations(config: VisionGatherConfig):
         }
         with open(os.path.join(writer.module_dir, METADATA_FILENAME), "w") as f:
             json.dump(metadata, f, indent=2)
-        logger.info(f"Layer {layer_idx}: {writer.total_tokens} tokens, {writer.shard_index} shards")
+        logger.info(
+            f"Layer {layer_idx}: {writer.total_tokens} tokens, {writer.shard_index} shards")
     logger.info(f"Done. Output: {config.output_dir}")
 
 
