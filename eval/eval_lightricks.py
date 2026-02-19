@@ -2,11 +2,14 @@ import torch
 import numpy as np
 import cv2
 from diffusers import AutoencoderKLLTXVideo
+from dictionary_learning.dictionary_learning.dictionary import AutoEncoder
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import MatryoshkaBatchTopKSAE
 from video_utils import read_all_frames
 from gather_utils import preprocess_frames
 
-SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-06_08-18-08_lightricks/trainer_2/ae.pt"
+# SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-06_08-18-08_lightricks/trainer_2/ae.pt"
+
+SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-19_05-37-03_lightricks_standard/vae_latent_mean/trainer_8/ae.pt"
 VIDEO_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4"
 MODEL = "Lightricks/LTX-Video-0.9.5"
 D_MODEL = 128
@@ -19,7 +22,7 @@ vae = AutoencoderKLLTXVideo.from_pretrained(
     MODEL, subfolder="vae", torch_dtype=torch.float32,
 ).to(DEVICE)
 vae.eval()
-sae = MatryoshkaBatchTopKSAE.from_pretrained(SAE_PATH).to(DEVICE)
+sae = AutoEncoder.from_pretrained(SAE_PATH).to(DEVICE)
 
 TEMPORAL_STRIDE = 8
 
@@ -54,7 +57,7 @@ for feature_id in feature_ids:
         T_P, H_P, W_P).cpu().float().detach().numpy()
 
     out = cv2.VideoWriter(
-        f"export/out_{feature_id}.mp4",
+        f"export/lightricks/standard/out_{feature_id}.mp4",
         cv2.VideoWriter_fourcc(*"mp4v"), 30, (W_VID, H_VID),
     )
 

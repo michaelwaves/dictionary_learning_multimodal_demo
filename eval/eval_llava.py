@@ -1,11 +1,11 @@
+import os
 import torch
 import numpy as np
 import cv2
 from transformers import LlavaNextVideoForConditionalGeneration, LlavaNextVideoProcessor
 from dictionary_learning.dictionary_learning.dictionary import JumpReluAutoEncoder
 from safetensors.torch import load_file
-from video_utils import read_all_frames, read_video_pyav
-
+from video_utils import read_all_frames
 SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-04_llava/sae_weights.safetensors"
 VIDEO_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4"
 MODEL = "llava-hf/LLaVA-NeXT-Video-7B-hf"
@@ -13,8 +13,10 @@ HOOK_LAYER = 16
 D_MODEL = 4096
 D_SAE = 65536
 DEVICE = "cuda"
+MAX_FRAMES = 70
 PROMPT = "USER: <video>\nDescribe this video.\nASSISTANT:"
-feature_ids = range(0, 1000, 10)
+feature_ids = list(range(0, 10000, 100))
+feature_ids.append(47007)
 
 
 def load_sae(path: str, d_model: int, d_sae: int, device: str) -> JumpReluAutoEncoder:
@@ -33,7 +35,7 @@ processor = LlavaNextVideoProcessor.from_pretrained(MODEL)
 sae = load_sae(SAE_PATH, D_MODEL, D_SAE, DEVICE)
 
 print("Reading video")
-video_frames = np.stack(read_all_frames(VIDEO_PATH))
+video_frames = np.stack(read_all_frames(VIDEO_PATH))[0:MAX_FRAMES]
 inputs = processor(text=PROMPT, videos=[
                    video_frames], return_tensors="pt").to(DEVICE)
 
@@ -60,10 +62,11 @@ print(f"act shape: {act.shape}, min: {act.min():.4f}, max: {act.max():.4f}")
 
 print("Encoding SAE features")
 feats = sae.encode(act)
+top_feats = feats.sum(dim=0).topk(20).indices.tolist()
 print(
     f"feats shape: {feats.shape}, nonzero per token: {(feats > 0).float().sum(dim=1).mean():.1f}")
 print(
-    f"active feature ids (top 20): {feats.sum(dim=0).topk(20).indices.tolist()}")
+    f"active feature ids (top 20): {top_feats}")
 
 input_ids = inputs["input_ids"].squeeze()
 placeholder_mask = input_ids == model.config.video_token_index
@@ -82,13 +85,15 @@ num_all_frames = len(video_frames)
 H_VID, W_VID = video_frames.shape[1], video_frames.shape[2]
 fps = cv2.VideoCapture(VIDEO_PATH).get(cv2.CAP_PROP_FPS)
 
+os.makedirs("export/llava", exist_ok=True)
+feature_ids.extend(top_feats)
 for feature_id in feature_ids:
     feat_map = video_feats[:, feature_id].reshape(
         num_model_frames, H_P, W_P).cpu().float().detach().numpy()
     feat_max = feat_map.max() + 1e-8
 
     out = cv2.VideoWriter(
-        f"export/out_{feature_id}.mp4",
+        f"export/llava/out_{feature_id}.mp4",
         cv2.VideoWriter_fourcc(*"mp4v"), fps, (W_VID, H_VID),
     )
 

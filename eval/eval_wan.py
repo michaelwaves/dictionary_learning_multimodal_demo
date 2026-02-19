@@ -3,10 +3,12 @@ import numpy as np
 import cv2
 from diffusers import AutoencoderKLWan
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import MatryoshkaBatchTopKSAE
+from dictionary_learning.dictionary_learning import AutoEncoder
 from video_utils import read_all_frames
 from gather_utils import preprocess_frames
 
-SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-17_04-47-16_wan/resid_post_layer_all/trainer_1/ae.pt"
+# SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-17_04-47-16_wan/resid_post_layer_all/trainer_1/ae.pt"
+SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-19_05-39-14_wan_standard/vae_latent_mean/trainer_6/ae.pt"
 VIDEO_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4"
 MODEL = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 D_MODEL = 48
@@ -26,8 +28,9 @@ vae = AutoencoderKLWan.from_pretrained(
     MODEL, subfolder="vae", torch_dtype=torch.float32,
 ).to(DEVICE)
 vae.eval()
-sae = MatryoshkaBatchTopKSAE.from_pretrained(SAE_PATH).to(DEVICE)
+# sae = MatryoshkaBatchTopKSAE.from_pretrained(SAE_PATH).to(DEVICE)
 
+sae = AutoEncoder.from_pretrained(SAE_PATH).to(DEVICE)
 print("Reading video")
 all_frames = read_all_frames(VIDEO_PATH)
 aligned_count = align_frame_count(len(all_frames))
@@ -42,14 +45,18 @@ with torch.no_grad():
 B, C, T_P, H_P, W_P = latent_mean.shape
 act = latent_mean.permute(0, 2, 3, 4, 1).reshape(-1, C).float()
 
-print(f"act shape: {act.shape}, min: {act.min():.4f}, max: {act.max():.4f}, mean: {act.mean():.4f}")
+print(
+    f"act shape: {act.shape}, min: {act.min():.4f}, max: {act.max():.4f}, mean: {act.mean():.4f}")
 
 print("Encoding SAE features")
 feats = sae.encode(act)
 
-print(f"feats shape: {feats.shape}, min: {feats.min():.4f}, max: {feats.max():.4f}")
-print(f"nonzero features per token: {(feats > 0).float().sum(dim=1).mean():.1f}")
-print(f"active feature ids (top 20): {feats.sum(dim=0).topk(20).indices.tolist()}")
+print(
+    f"feats shape: {feats.shape}, min: {feats.min():.4f}, max: {feats.max():.4f}")
+print(
+    f"nonzero features per token: {(feats > 0).float().sum(dim=1).mean():.1f}")
+print(
+    f"active feature ids (top 20): {feats.sum(dim=0).topk(20).indices.tolist()}")
 
 H_VID, W_VID = video_frames.shape[1], video_frames.shape[2]
 
@@ -58,7 +65,7 @@ for feature_id in feature_ids:
         T_P, H_P, W_P).cpu().float().detach().numpy()
 
     out = cv2.VideoWriter(
-        f"export/out_{feature_id}.mp4",
+        f"export/wan/standard/out_{feature_id}.mp4",
         cv2.VideoWriter_fourcc(*"mp4v"), 30, (W_VID, H_VID),
     )
 

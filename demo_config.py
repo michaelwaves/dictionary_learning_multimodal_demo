@@ -59,7 +59,7 @@ class SparsityPenalties:
     gated: list[float]
 
 
-num_tokens = 500_000_000
+num_tokens = 50_000_000
 
 eval_num_inputs = 200
 random_seeds = [0]
@@ -84,7 +84,7 @@ SPARSITY_PENALTIES = SparsityPenalties(
     gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
 )
 
-TARGET_L0s = [10, 20]
+TARGET_L0s = [20, 50]
 
 # TARGET_L0s = [80, 160]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]
