@@ -1,27 +1,19 @@
 import torch
 import numpy as np
 import cv2
-from diffusers import AutoencoderKLLTXVideo
+from diffusers import AutoencoderKLWan
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import MatryoshkaBatchTopKSAE
 from video_utils import read_all_frames
 from gather_utils import preprocess_frames
 
-SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-06_08-18-08_lightricks/trainer_2/ae.pt"
+SAE_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-17_04-47-16_wan/resid_post_layer_all/trainer_1/ae.pt"
 VIDEO_PATH = "/mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4"
-MODEL = "Lightricks/LTX-Video-0.9.5"
-D_MODEL = 128
+MODEL = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+D_MODEL = 48
 DEVICE = "cuda"
 HEIGHT = WIDTH = 256
-feature_ids = range(0, 8000, 100)
-
-
-vae = AutoencoderKLLTXVideo.from_pretrained(
-    MODEL, subfolder="vae", torch_dtype=torch.float32,
-).to(DEVICE)
-vae.eval()
-sae = MatryoshkaBatchTopKSAE.from_pretrained(SAE_PATH).to(DEVICE)
-
-TEMPORAL_STRIDE = 8
+TEMPORAL_STRIDE = 4
+feature_ids = range(0, 4096, 100)
 
 
 def align_frame_count(n: int, stride: int = TEMPORAL_STRIDE) -> int:
@@ -29,6 +21,12 @@ def align_frame_count(n: int, stride: int = TEMPORAL_STRIDE) -> int:
         return 1
     return ((n - 2) // stride) * stride + 1
 
+
+vae = AutoencoderKLWan.from_pretrained(
+    MODEL, subfolder="vae", torch_dtype=torch.float32,
+).to(DEVICE)
+vae.eval()
+sae = MatryoshkaBatchTopKSAE.from_pretrained(SAE_PATH).to(DEVICE)
 
 print("Reading video")
 all_frames = read_all_frames(VIDEO_PATH)
@@ -44,8 +42,14 @@ with torch.no_grad():
 B, C, T_P, H_P, W_P = latent_mean.shape
 act = latent_mean.permute(0, 2, 3, 4, 1).reshape(-1, C).float()
 
+print(f"act shape: {act.shape}, min: {act.min():.4f}, max: {act.max():.4f}, mean: {act.mean():.4f}")
+
 print("Encoding SAE features")
 feats = sae.encode(act)
+
+print(f"feats shape: {feats.shape}, min: {feats.min():.4f}, max: {feats.max():.4f}")
+print(f"nonzero features per token: {(feats > 0).float().sum(dim=1).mean():.1f}")
+print(f"active feature ids (top 20): {feats.sum(dim=0).topk(20).indices.tolist()}")
 
 H_VID, W_VID = video_frames.shape[1], video_frames.shape[2]
 
@@ -59,7 +63,7 @@ for feature_id in feature_ids:
     )
 
     for t, frame in enumerate(video_frames):
-        t_p = min(t // 8, T_P - 1)
+        t_p = min(t // TEMPORAL_STRIDE, T_P - 1)
         heatmap = cv2.resize(feat_map[t_p], (W_VID, H_VID))
         heatmap = (heatmap / (feat_map.max() + 1e-8) * 255).astype(np.uint8)
         colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
