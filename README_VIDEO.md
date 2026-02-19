@@ -54,6 +54,12 @@ python eval/top_samples.py \
     --sae-path /path/to/sae.pt \
     --video-dir /path/to/videos \
     --output-dir ./top_samples
+
+
+python eval/top_samples.py  --sae-path /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-06_08-18-08_lightricks/trainer_1/ae.pt --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf --selection active  --render-mode patch --topk 500
+
+
+  python eval/top_samples.py --sae-path /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-17_04-47-16_wan/resid_post_layer_all/trainer_1/ae.pt  --video-dir /mnt/nw/home/m.yu/repos/multimodal_sae/videos_celebdf  --vae-type wan  --vae-model Wan-AI/Wan2.2-TI2V-5B-Diffusers  --selection sparse --render-mode heatmap  --topk-features 500 --max-videos 10 --min-fire-count 20
 ```
 
 ## Utility scripts

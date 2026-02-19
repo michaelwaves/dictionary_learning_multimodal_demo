@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import (
     MatryoshkaBatchTopKSAE,
 )
-from eval.heatmap import render_feature_heatmap, sample_frame_indices
+from eval.heatmap import render_feature_heatmap, render_feature_patches, sample_frame_indices
 from gather_utils import (
     TEMPORAL_STRIDE, chunk_frames_for_vae, load_model_vae,
     multi_module_hooks, preprocess_frames,
@@ -100,12 +100,19 @@ def load_display_frames(video_path, num_display, sampling, num_vae_frames, start
 @click.option("--max-count", default=200)
 @click.option("--topk", default=20)
 @click.option("--start", default=0.0)
+@click.option("--render-mode", default="heatmap", type=click.Choice(["heatmap", "patch"]))
 @click.option("--full-video", is_flag=True)
 @click.option("--device", default="cuda")
+RENDER_FUNCTIONS = {
+    "heatmap": render_feature_heatmap,
+    "patch": render_feature_patches,
+}
+
+
 def main(
     sae_path, video_path, output_dir, hook_module, vae_model, vae_type,
     num_frames, display_frames, sampling, min_count, max_count, topk, start,
-    full_video, device,
+    render_mode, full_video, device,
 ):
     os.makedirs(output_dir, exist_ok=True)
     temporal_stride = TEMPORAL_STRIDE[vae_type]
@@ -146,7 +153,8 @@ def main(
         idx = feature_idx.item()
         count = fire_counts[idx].item()
         activation_map = feature_acts[:, idx].reshape(temporal, lat_h, lat_w)
-        image = render_feature_heatmap(activation_map, frames_to_show, latent_indices)
+        render_fn = RENDER_FUNCTIONS[render_mode]
+        image = render_fn(activation_map, frames_to_show, latent_indices)
         image.save(os.path.join(output_dir, f"feature_{idx:04d}_count{count}.png"))
 
     click.echo(f"Saved {len(top_indices)} heatmaps to {output_dir}")

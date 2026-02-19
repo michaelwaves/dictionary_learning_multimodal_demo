@@ -5,3 +5,5 @@
 *.out
 *.venv
 *.DS_Store
+**/top_samples/
+**/videos_*/

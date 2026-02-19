@@ -59,7 +59,8 @@ def remove_norm_outliers(
 def _resolve_module(root: torch.nn.Module, module_path: str) -> torch.nn.Module:
     current = root
     for part in module_path.split("."):
-        current = current[int(part)] if part.isdigit() else getattr(current, part)
+        current = current[int(part)] if part.isdigit(
+        ) else getattr(current, part)
     return current
 
 
@@ -137,7 +138,8 @@ class ShardWriter:
         )
         torch.save(shard_data, shard_path)
         self.total_tokens += shard_data.shape[0]
-        logger.info(f"{self.module_dir}: shard {self.shard_index} — {shard_data.shape[0]} tokens")
+        logger.info(
+            f"{self.module_dir}: shard {self.shard_index} — {shard_data.shape[0]} tokens")
         self.shard_index += 1
         self.buffer = []
 
@@ -189,12 +191,14 @@ class FramePrefetcher:
             try:
                 return future.result(timeout=FRAME_LOAD_TIMEOUT_SECONDS)
             except Exception as e:
-                logger.debug(f"Prefetch failed for {self._video_paths[video_index]}: {e}")
+                logger.debug(
+                    f"Prefetch failed for {self._video_paths[video_index]}: {e}")
                 return None
         try:
             return self._frame_reader(self._video_paths[video_index], self._num_frames)
         except Exception as e:
-            logger.debug(f"Sync load failed for {self._video_paths[video_index]}: {e}")
+            logger.debug(
+                f"Sync load failed for {self._video_paths[video_index]}: {e}")
             return None
 
     def shutdown(self):
