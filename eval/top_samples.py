@@ -1,358 +1,155 @@
-"""Find top-activating video chunks per SAE feature across a corpus."""
+"""Visualize top-activating video chunks per SAE feature."""
 
 from video_utils import read_all_frames, scan_video_directory
 from gather_utils import (
     TEMPORAL_STRIDE, chunk_frames_for_vae, load_model_vae,
     multi_module_hooks, preprocess_frames,
 )
-from eval.heatmap import render_feature_heatmap, render_feature_patches, render_feature_values
+from eval.top_k_tracker import TopKTracker
+from eval.heatmap import render_feature_heatmap
 from dictionary_learning.dictionary_learning.trainers.matryoshka_batch_top_k import (
     MatryoshkaBatchTopKSAE,
 )
-import json
+from dictionary_learning.dictionary_learning.dictionary import AutoEncoder
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 import click
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-@dataclass(order=True)
-class ChunkReference:
-    score: float
-    video_path: str = field(compare=False)
-    chunk_start: int = field(compare=False)
-    chunk_frame_count: int = field(compare=False)
+ENCODE_SIZE = 256
+THUMB_HEIGHT = 96
+DISPLAY_FRAMES = 8
+MAX_VIDEOS = 1
 
 
-class TopChunkTracker:
-    """Track top-k scoring chunks per SAE feature via a score tensor."""
-
-    def __init__(self, num_features: int, k: int):
-        self.scores = torch.full((num_features, k), -float("inf"))
-        self.refs: list[list[ChunkReference | None]] = [
-            [None] * k for _ in range(num_features)
-        ]
-        self.fire_counts = torch.zeros(num_features, dtype=torch.long)
-
-    def update(
-        self, mean_features: torch.Tensor,
-        video_path: str, chunk_start: int, chunk_frame_count: int,
-    ):
-        mean_features = mean_features.cpu()
-        self.fire_counts += (mean_features > 0).long()
-        min_scores, min_slots = self.scores.min(dim=1)
-        for idx in (mean_features > min_scores).nonzero(as_tuple=True)[0].tolist():
-            slot = min_slots[idx].item()
-            score = mean_features[idx].item()
-            self.scores[idx, slot] = score
-            self.refs[idx][slot] = ChunkReference(
-                score, video_path, chunk_start, chunk_frame_count,
-            )
-
-    def get_top_chunks(self, feature_idx: int) -> list[ChunkReference]:
-        return sorted([r for r in self.refs[feature_idx] if r], reverse=True)
-
-    def most_sparse_features(self, n: int, min_fire_count: int = 20) -> list[int]:
-        """Features with fewest chunk activations, excluding dead/too-rare."""
-        counts = self.fire_counts.float().clone()
-        counts[counts < min_fire_count] = float("inf")
-        k = min(n, (counts < float("inf")).sum().item())
-        if k == 0:
-            return []
-        return counts.topk(k, largest=False).indices.tolist()
-
-    def most_active_features(self, n: int, min_fire_count: int = 2) -> list[int]:
-        """Features with highest total top-k scores, excluding dead/too-rare."""
-        total_scores = self.scores.clone()
-        total_scores[total_scores == -float("inf")] = 0
-        aggregate = total_scores.sum(dim=1)
-        aggregate[self.fire_counts < min_fire_count] = -1
-        k = min(n, (aggregate >= 0).sum().item())
-        if k == 0:
-            return []
-        return aggregate.topk(k).indices.tolist()
-
-
-def save_feature_distributions(tracker: TopChunkTracker, run_dir: str):
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    counts = tracker.fire_counts.numpy()
-    live = counts[counts > 0]
-    axes[0].hist(live, bins=50, edgecolor="black", linewidth=0.5)
-    axes[0].set_xlabel("Fire count (chunks)")
-    axes[0].set_ylabel("Number of features")
-    axes[0].set_title(f"Feature fire counts ({len(live)}/{len(counts)} alive)")
-    axes[0].set_yscale("log")
-
-    top_scores = tracker.scores.clone()
-    top_scores[top_scores == -float("inf")] = 0
-    max_per_feature = top_scores.max(dim=1).values.numpy()
-    live_scores = max_per_feature[max_per_feature > 0]
-    axes[1].hist(live_scores, bins=50, edgecolor="black", linewidth=0.5)
-    axes[1].set_xlabel("Max activation score")
-    axes[1].set_ylabel("Number of features")
-    axes[1].set_title(f"Best score per feature (n={len(live_scores)})")
-
-    plt.tight_layout()
-    path = os.path.join(run_dir, "feature_distributions.png")
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    click.echo(f"Saved distributions to {path}")
-
-
-@torch.no_grad()
-def encode_chunk_features(frames, vae, sae, hook_module, height, width, device):
-    """Encode frames through VAE + SAE, return (N, dict_size) features and spatial dims."""
-    video_tensor = preprocess_frames(frames, height, width, device)
-    if hook_module:
-        with multi_module_hooks(vae, [hook_module]) as captured:
-            vae.encode(video_tensor)
-        activation = captured[hook_module]
-    else:
-        activation = vae.encode(
-            video_tensor, return_dict=True).latent_dist.mean
-    if activation.ndim == 5:
-        _, c, t, h, w = activation.shape
-        flat = activation.permute(0, 2, 3, 4, 1).reshape(-1, c)
-        spatial_dims = (t, h, w)
-    elif activation.ndim == 4:
-        _, c, h, w = activation.shape
-        flat = activation.permute(0, 2, 3, 1).reshape(-1, c)
-        spatial_dims = (1, h, w)
-    else:
-        flat = activation.reshape(-1, activation.shape[-1])
-        spatial_dims = (flat.shape[0], 1, 1)
-    features = sae.encode(flat.to(sae.W_enc.device))
-    del video_tensor, activation
-    return features, spatial_dims
-
-
-def scan_corpus(
-    video_paths, vae, sae, hook_module,
-    chunk_size, height, width, device, samples_per_feature, temporal_stride=8,
-):
-    tracker = TopChunkTracker(sae.dict_size, samples_per_feature)
-    for video_path in tqdm(video_paths, desc="Scanning corpus"):
-        try:
-            all_frames = read_all_frames(video_path)
-        except Exception as e:
-            click.echo(f"Skipping {video_path}: {e}", err=True)
-            continue
-        chunks = chunk_frames_for_vae(all_frames, chunk_size, temporal_stride)
-        offset = 0
-        for chunk in chunks:
-            raw_count = min(chunk_size, len(all_frames) - offset)
-            try:
-                features, _ = encode_chunk_features(
-                    chunk, vae, sae, hook_module, height, width, device,
-                )
-            except Exception as e:
-                click.echo(f"Encode failed for {video_path} chunk@{offset}: {e}", err=True)
-                offset += chunk_size
-                continue
-            tracker.update(features.mean(dim=0), video_path, offset, raw_count)
-            offset += chunk_size
-            del features
-            torch.cuda.empty_cache()
-        del all_frames
-    return tracker
-
-
-LABEL_WIDTH = 220
-LABEL_BG = (30, 30, 30)
-TEXT_COLOR = (220, 220, 220)
-
-try:
-    _FONT = ImageFont.truetype(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
-except (OSError, IOError):
-    _FONT = ImageFont.load_default()
-
-
-def render_row_label(lines: list[str], height: int) -> np.ndarray:
-    label = Image.new("RGB", (LABEL_WIDTH, height), LABEL_BG)
-    draw = ImageDraw.Draw(label)
-    y = 4
-    for line in lines:
-        draw.text((6, y), line, fill=TEXT_COLOR, font=_FONT)
-        y += 15
-    return np.array(label)
-
-
-RENDER_FUNCTIONS = {
-    "heatmap": render_feature_heatmap,
-    "patch": render_feature_patches,
-    "values": render_feature_values,
-}
-
-
-@torch.no_grad()
-def render_feature_grid(
-    chunks, feature_idx, chunk_size, thumb_height, fire_count,
-    vae, sae, hook_module, height, width, device,
-    render_mode="heatmap", display_frames=0,
-):
-    strips = []
-    for rank, ref in enumerate(chunks, 1):
-        frames = read_all_frames(ref.video_path)
-        frames = frames[ref.chunk_start:ref.chunk_start +
-                        ref.chunk_frame_count]
-        while len(frames) < chunk_size:
-            frames.append(frames[-1])
-        frames = frames[:chunk_size]
-
-        features, (t_lat, h_lat, w_lat) = encode_chunk_features(
-            frames, vae, sae, hook_module, height, width, device,
-        )
-        activation_map = features[:, feature_idx].reshape(t_lat, h_lat, w_lat)
-        del features
-        torch.cuda.empty_cache()
-
-        total = len(frames)
-        if display_frames and display_frames < total:
-            selected = np.linspace(0, total - 1, display_frames, dtype=int)
-        else:
-            selected = np.arange(total)
-
-        thumbs = []
-        for i in selected:
-            h, w = frames[i].shape[:2]
-            thumb_w = int(w * thumb_height / h)
-            thumbs.append(np.array(
-                Image.fromarray(frames[i]).resize(
-                    (thumb_w, thumb_height), Image.LANCZOS),
-            ))
-        latent_indices = [
-            min(i * t_lat // total, t_lat - 1) for i in selected
-        ]
-        render_fn = RENDER_FUNCTIONS[render_mode]
-        heatmap_strip = np.array(
-            render_fn(activation_map, thumbs, latent_indices),
-        )
-
-        video_name = os.path.basename(ref.video_path)
-        if len(video_name) > 30:
-            video_name = video_name[:27] + "..."
-        end_frame = ref.chunk_start + ref.chunk_frame_count
-        label = render_row_label([
-            f"#{rank}  score: {ref.score:.4f}",
-            video_name,
-            f"frames {ref.chunk_start}-{end_frame}",
-        ], thumb_height)
-        strips.append(np.concatenate([label, heatmap_strip], axis=1))
-
-    max_w = max(s.shape[1] for s in strips)
-
-    # Title row
-    title_label = render_row_label([
-        f"Feature {feature_idx}  |  {fire_count} fires",
-    ], 20)
-    title_pad = np.full(
-        (20, max_w - LABEL_WIDTH, 3), LABEL_BG[0], dtype=np.uint8,
-    )
-    title_row = np.concatenate([title_label, title_pad], axis=1)
-    rows = [title_row]
-    for strip in strips:
-        if strip.shape[1] < max_w:
-            pad = np.zeros(
-                (thumb_height, max_w - strip.shape[1], 3), dtype=np.uint8,
-            )
-            strip = np.concatenate([strip, pad], axis=1)
-        rows.append(strip)
-    return Image.fromarray(np.concatenate(rows, axis=0))
+@dataclass
+class Encoder:
+    vae: torch.nn.Module
+    sae: torch.nn.Module
+    hook_module: str | None
+    device: str
 
 
 @click.command()
 @click.option("--sae-path", required=True, type=click.Path(exists=True))
 @click.option("--video-dir", required=True, type=click.Path(exists=True))
-@click.option("--output-dir", default="top_samples", type=click.Path())
+@click.option("--output-dir", default="top_samples")
 @click.option("--hook-module", default=None)
 @click.option("--vae-model", default="Lightricks/LTX-Video-0.9.5")
 @click.option("--vae-type", default="ltx", type=click.Choice(["ltx", "wan"]))
-@click.option("--num-frames", default=33, type=int, help="Chunk size matching gather")
+@click.option("--num-frames", default=33, type=int)
 @click.option("--samples-per-feature", default=10, type=int)
-@click.option("--topk-features", default=20, type=int)
-@click.option("--feature-indices", default=None, help="Comma-separated feature indices")
-@click.option("--selection", default="sparse", type=click.Choice(["sparse", "active"]),
-              help="sparse=rarest features, active=strongest features")
-@click.option("--min-fire-count", default=20, type=int, help="Exclude features firing on fewer chunks")
-@click.option("--render-mode", default="heatmap", type=click.Choice(["heatmap", "patch", "values"]))
-@click.option("--display-frames", default=0, type=int, help="Frames to show per chunk (0=all)")
-@click.option("--thumb-height", default=96, type=int)
-@click.option("--max-videos", default=0, type=int, help="0=all")
+@click.option("--num-features", default=20, type=int)
+@click.option("--feature-indices", default=None, help="Comma-separated")
 @click.option("--device", default="cuda")
 def main(
-    sae_path, video_dir, output_dir, hook_module, vae_model, vae_type, num_frames,
-    samples_per_feature, topk_features, feature_indices, selection, min_fire_count,
-    render_mode, display_frames, thumb_height, max_videos, device,
+    sae_path, video_dir, output_dir, hook_module,
+    vae_model, vae_type, num_frames,
+    samples_per_feature, num_features, feature_indices, device,
 ):
     run_dir = os.path.join(
         output_dir, "runs", datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
     os.makedirs(run_dir, exist_ok=True)
-    temporal_stride = TEMPORAL_STRIDE[vae_type]
-
-    vae = load_model_vae(vae_model, vae_type, device)
-    sae = MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device)
-    sae.eval()
-    video_paths = scan_video_directory(video_dir)
-    if max_videos > 0:
-        video_paths = video_paths[:max_videos]
-    click.echo(f"Scanning {len(video_paths)} videos...")
-    tracker = scan_corpus(
-        video_paths, vae, sae, hook_module,
-        num_frames, 256, 256, device, samples_per_feature, temporal_stride,
+    encoder = Encoder(
+        vae=load_model_vae(vae_model, vae_type, device),
+        sae=MatryoshkaBatchTopKSAE.from_pretrained(sae_path, device=device),
+        hook_module=hook_module, device=device,
     )
-    save_feature_distributions(tracker, run_dir)
+    encoder.sae.eval()
+    stride = TEMPORAL_STRIDE[vae_type]
 
-    if feature_indices:
-        indices = [int(x) for x in feature_indices.split(",")]
-    elif selection == "active":
-        indices = tracker.most_active_features(topk_features, min_fire_count)
-    else:
-        indices = tracker.most_sparse_features(topk_features, min_fire_count)
+    paths = scan_video_directory(video_dir)
+    paths = paths[:MAX_VIDEOS]
+    click.echo(f"Scanning {len(paths)} videos...")
+    tracker = scan_corpus(paths, encoder, num_frames,
+                          stride, samples_per_feature)
 
-    metadata = {
-        "timestamp": datetime.now().isoformat(),
-        "sae_path": os.path.abspath(sae_path),
-        "video_dir": os.path.abspath(video_dir),
-        "vae_model": vae_model,
-        "vae_type": vae_type,
-        "hook_module": hook_module,
-        "num_frames": num_frames,
-        "num_videos_scanned": len(video_paths),
-        "samples_per_feature": samples_per_feature,
-        "topk_features": topk_features,
-        "feature_indices": indices,
-        "min_fire_count": min_fire_count,
-        "thumb_height": thumb_height,
-        "dict_size": sae.dict_size,
-    }
-    with open(os.path.join(run_dir, "metadata.json"), "w") as f:
-        json.dump(metadata, f, indent=2)
-
+    indices = (
+        [int(x) for x in feature_indices.split(",")]
+        if feature_indices else tracker.top_features(num_features)
+    )
     click.echo(f"Rendering {len(indices)} features...")
-    for feat_idx in tqdm(indices, desc="Rendering"):
-        chunks = tracker.get_top_chunks(feat_idx)
+    for feat in tqdm(indices, desc="Rendering"):
+        chunks = tracker.top_chunks(feat)
         if not chunks:
             continue
-        fires = tracker.fire_counts[feat_idx].item()
-        image = render_feature_grid(
-            chunks, feat_idx, num_frames, thumb_height, fires,
-            vae, sae, hook_module, 256, 256, device, render_mode, display_frames,
+        render_feature_grid(chunks, feat, num_frames, encoder).save(
+            os.path.join(run_dir, f"feature_{feat:04d}.png"),
         )
-        image.save(os.path.join(
-            run_dir, f"feature_{feat_idx:04d}_fires{fires}.png"))
     click.echo(f"Saved to {run_dir}")
+
+
+def scan_corpus(video_paths, encoder, chunk_size, temporal_stride, k):
+    tracker = TopKTracker(encoder.sae.dict_size, k)
+    for path in tqdm(video_paths, desc="Scanning"):
+        frames = read_all_frames(path)
+        chunks = chunk_frames_for_vae(frames, chunk_size, temporal_stride)
+        for i, chunk in enumerate(chunks):
+            offset = i * chunk_size
+            features, _ = encode_chunk(chunk, encoder)
+            # is this chunk full or the last one(truncated)
+            raw_count = min(chunk_size, len(frames) - offset)
+            tracker.update(features.mean(dim=0).cpu(), path, offset, raw_count)
+    return tracker
+
+
+def render_feature_grid(chunks, feature_idx, chunk_size, encoder):
+    rows = []
+    for ref in chunks:
+        frames = read_all_frames(ref.video_path)[
+            ref.start:ref.start + ref.count]
+        while len(frames) < chunk_size:
+            frames.append(frames[-1])
+        features, (t, h, w) = encode_chunk(frames[:chunk_size], encoder)
+        act_map = features[:, feature_idx].reshape(t, h, w)
+        sample_idx = np.linspace(0, len(frames) - 1, DISPLAY_FRAMES, dtype=int)
+        thumbs = [_resize_thumb(frames[i]) for i in sample_idx]
+        lat_idx = [min(i * t // len(frames), t - 1) for i in sample_idx]
+        rows.append(np.array(render_feature_heatmap(act_map, thumbs, lat_idx)))
+    max_w = max(r.shape[1] for r in rows)
+    padded = [np.pad(r, ((0, 0), (0, max_w - r.shape[1]), (0, 0)))
+              for r in rows]
+    return Image.fromarray(np.concatenate(padded, axis=0))
+
+
+@torch.no_grad()
+def encode_chunk(frames, encoder):
+    tensor = preprocess_frames(
+        frames, ENCODE_SIZE, ENCODE_SIZE, encoder.device)
+    if encoder.hook_module:
+        with multi_module_hooks(encoder.vae, [encoder.hook_module]) as captured:
+            encoder.vae.encode(tensor)
+        act = captured[encoder.hook_module]
+    else:
+        act = encoder.vae.encode(tensor, return_dict=True).latent_dist.mean
+
+    if act.ndim == 5:
+        b, c, t, h, w = act.shape
+        flat, dims = act.permute(0, 2, 3, 4, 1).reshape(-1, c), (t, h, w)
+    elif act.ndim == 4:
+        b, c, h, w = act.shape
+        flat, dims = act.permute(0, 2, 3, 1).reshape(-1, c), (1, h, w)
+    else:
+        flat = act.reshape(-1, act.shape[-1])
+        flat, dims = flat, (flat.shape[0], 1, 1)
+    return encoder.sae.encode(flat.to(encoder.sae.W_enc.device)), dims
+
+
+def _resize_thumb(frame):
+    h, w = frame.shape[:2]
+    return np.array(Image.fromarray(frame).resize(
+        (int(w * THUMB_HEIGHT / h), THUMB_HEIGHT), Image.LANCZOS,
+    ))
 
 
 if __name__ == "__main__":
