@@ -1,0 +1,10 @@
+sae_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-19_19-47-32/layer_8/trainer_2/ae.pt
+video_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4
+layer: 8
+start_frame: 0
+end_frame: null
+export_dir: export/vjepa2/8
+feature_step: 69
+start_feature: 0
+end_feature: null
+device: cuda

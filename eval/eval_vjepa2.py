@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import cv2
 import hydra
+import imageio.v3 as iio
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -89,22 +90,20 @@ def export_feature_heatmap_video(
 
     h_vid, w_vid = video_frames.shape[1], video_frames.shape[2]
     output_path = os.path.join(export_dir, f"feature_{feature_id}.mp4")
-    writer = cv2.VideoWriter(
-        output_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (w_vid, h_vid))
 
     total_frames = len(video_frames)
     max_activation = feature_map.max() + 1e-8
 
+    frames = []
     for frame_idx, frame in enumerate(video_frames):
         t_p = min(frame_idx * grid.temporal // total_frames, grid.temporal - 1)
         heatmap = cv2.resize(feature_map[t_p], (w_vid, h_vid))
         heatmap = (heatmap / max_activation * 255).astype(np.uint8)
         colored_heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-        blended = cv2.addWeighted(
-            frame[:, :, ::-1].copy(), 0.6, colored_heatmap, 0.4, 0)
-        writer.write(blended)
+        blended = cv2.addWeighted(frame, 0.6, colored_heatmap[:, :, ::-1], 0.4, 0)
+        frames.append(blended)
 
-    writer.release()
+    iio.imwrite(output_path, np.stack(frames), fps=30, codec="libx264")
 
 
 if __name__ == "__main__":

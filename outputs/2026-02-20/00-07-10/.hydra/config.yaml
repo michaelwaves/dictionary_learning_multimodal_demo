@@ -1,7 +1,4 @@
 sae_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-19_19-48-18/layer_23/trainer_2/ae.pt
-#sae_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-19_19-47-32/layer_8/trainer_2/ae.pt
-#video_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4
-
 video_path: sample_videos/jam.mp4
 layer: 23
 start_frame: 100
