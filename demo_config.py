@@ -77,7 +77,8 @@ max_activation_norm_multiple = 10
 learning_rates = [5e-5]
 
 
-wandb_project = "qwen-8b-sweep"
+# wandb_project = "qwen-8b-sweep"
+wandb_project = "gemma-4-E4B-sweep"
 
 LLM_CONFIG = {
     "EleutherAI/pythia-70m-deduped": LLMConfig(

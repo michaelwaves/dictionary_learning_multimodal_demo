@@ -129,7 +129,12 @@ def run_sae_training(
     submodule = utils.get_submodule(model, layer)
     submodule_name = f"resid_post_layer_{layer}"
     io = "out"
-    activation_dim = model.config.hidden_size
+
+    if "Gemma4" in model.config.architectures[0]:
+        print("\n\nWARNING: Gemma4 model detected, setting hidden_size to model.config.text_config.hidden_size")
+        activation_dim = model.config.text_config.hidden_size
+    else:
+        activation_dim = model.config.hidden_size
 
     if "Qwen" in model_name and demo_config.remove_bos:
         print(
