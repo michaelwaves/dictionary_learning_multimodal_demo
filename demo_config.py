@@ -101,6 +101,18 @@ LLM_CONFIG = {
     "Qwen/Qwen3-32B": LLMConfig(
         llm_batch_size=2, context_length=2048, sae_batch_size=2048, dtype=t.bfloat16
     ),
+    "google/gemma-4-31B": LLMConfig(
+        llm_batch_size=2,
+        context_length=2048,  # actually 256k but i guess we'll leave it short fornow?
+        sae_batch_size=2048,
+        dtype=t.bfloat16
+    ),
+    "google/gemma-4-E4B": LLMConfig(
+        llm_batch_size=16,
+        context_length=2048,  # actually 256k but i guess we'll leave it short fornow?
+        sae_batch_size=2048,
+        dtype=t.bfloat16
+    )
 }
 
 SPARSITY_PENALTIES = SparsityPenalties(

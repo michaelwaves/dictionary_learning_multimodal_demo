@@ -1,33 +1,32 @@
-import os
-
-# I believe this environment variable should be set before importing torch
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-import torch as t
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import argparse
-import itertools
-import random
-import json
-import torch.multiprocessing as mp
-import time
-import huggingface_hub
-from datasets import config
-from transformers import AutoTokenizer
-
-import demo_config
-
-# Kind of janky double importing dictionary_learning.dictionary_learning, but it works
-# This is leftover from when dictionary_learning was a only used as a submodule
+import dictionary_learning.dictionary_learning.utils as utils
+from dictionary_learning.dictionary_learning.training import trainSAE
+from dictionary_learning.dictionary_learning.evaluation import evaluate
+from dictionary_learning.dictionary_learning.pytorch_buffer import ActivationBuffer
 from dictionary_learning.dictionary_learning.utils import (
     hf_dataset_to_generator,
     hf_mixed_dataset_to_generator,
     hf_sequence_packing_dataset_to_generator,
 )
-from dictionary_learning.dictionary_learning.pytorch_buffer import ActivationBuffer
-from dictionary_learning.dictionary_learning.evaluation import evaluate
-from dictionary_learning.dictionary_learning.training import trainSAE
-import dictionary_learning.dictionary_learning.utils as utils
+import demo_config
+from transformers import AutoTokenizer
+from datasets import config
+import huggingface_hub
+import time
+import torch.multiprocessing as mp
+import json
+import random
+import itertools
+import argparse
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch as t
+import os
+
+# I believe this environment variable should be set before importing torch
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+
+# Kind of janky double importing dictionary_learning.dictionary_learning, but it works
+# This is leftover from when dictionary_learning was a only used as a submodule
 
 
 def get_args():
@@ -35,7 +34,8 @@ def get_args():
     parser.add_argument(
         "--save_dir", type=str, required=True, help="where to store sweep"
     )
-    parser.add_argument("--use_wandb", action="store_true", help="use wandb logging")
+    parser.add_argument("--use_wandb", action="store_true",
+                        help="use wandb logging")
     parser.add_argument("--dry_run", action="store_true", help="dry run sweep")
     parser.add_argument(
         "--save_checkpoints", action="store_true", help="save checkpoints"
@@ -98,11 +98,13 @@ def run_sae_training(
     dtype = demo_config.LLM_CONFIG[model_name].dtype
 
     num_buffer_inputs = buffer_tokens // context_length
-    print(f"buffer_size: {num_buffer_inputs}, buffer_size_in_tokens: {buffer_tokens}")
+    print(
+        f"buffer_size: {num_buffer_inputs}, buffer_size_in_tokens: {buffer_tokens}")
 
     log_steps = 100  # Log the training on wandb or print to console every log_steps
 
-    steps = int(num_tokens / sae_batch_size)  # Total number of batches to train
+    # Total number of batches to train
+    steps = int(num_tokens / sae_batch_size)
 
     if save_checkpoints:
         # Creates checkpoints at 0.0%, 0.1%, 0.316%, 1%, 3.16%, 10%, 31.6%, 100% of training
@@ -327,13 +329,18 @@ def push_to_huggingface(save_dir: str, repo_id: str):
 if __name__ == "__main__":
     """python demo.py --save_dir run2 --model_name EleutherAI/pythia-70m-deduped --layers 3 --architectures standard jump_relu batch_top_k top_k gated --use_wandb
     python demo.py --save_dir run3 --model_name google/gemma-2-2b --layers 12 --architectures standard top_k --use_wandb
-    python demo.py --save_dir jumprelu --model_name EleutherAI/pythia-70m-deduped --layers 3 --architectures jump_relu --use_wandb"""
+    python demo.py --save_dir jumprelu --model_name EleutherAI/pythia-70m-deduped --layers 3 --architectures jump_relu --use_wandb
+    python demo.py --save_dir gemma4 --model_name google/gemma-4-31B --layers 15 --architectures matryoshka_batch_top_k --use_wandb
+    python demo.py --save_dir gemma4 --model_name google/gemma-4-E4B --layers 21 --architectures matryoshka_batch_top_k --use_wandb
+
+    """
     args = get_args()
 
     hf_repo_id = args.hf_repo_id
 
     if hf_repo_id:
-        assert huggingface_hub.repo_exists(repo_id=hf_repo_id, repo_type="model")
+        assert huggingface_hub.repo_exists(
+            repo_id=hf_repo_id, repo_type="model")
 
     # This prevents random CUDA out of memory errors
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"

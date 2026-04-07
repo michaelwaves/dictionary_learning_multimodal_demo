@@ -5,3 +5,9 @@
 *.out
 *.venv
 *.DS_Store
+
+eval/
+export/
+uv.lock
+video_saes/
+videos_celebdf/
