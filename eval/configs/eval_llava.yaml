@@ -1,0 +1,12 @@
+sae_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/video_saes/runs/2026-02-04_llava/sae_weights.safetensors
+video_path: /mnt/nw/home/m.yu/repos/dictionary_learning_demo/videos_celebdf/fake/id0_id1_0000.mp4
+layer: 16
+d_model: 4096
+d_sae: 65536
+start_frame: 0
+end_frame: 70
+export_dir: export/llava
+feature_step: 100
+start_feature: 0
+end_feature: 10000
+device: cuda
