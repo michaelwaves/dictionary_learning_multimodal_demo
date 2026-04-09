@@ -58,10 +58,6 @@ class SparsityPenalties:
     gated: list[float]
 
 
-num_tokens = 500_000_000
-
-print(f"NOTE: Training on {num_tokens} tokens")
-
 eval_num_inputs = 200
 random_seeds = [0]
 dictionary_widths = [2**14, 2**16]
@@ -122,10 +118,6 @@ SPARSITY_PENALTIES = SparsityPenalties(
     p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
     gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
 )
-
-
-TARGET_L0s = [80, 160]
-# TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 
 @dataclass
@@ -243,6 +235,7 @@ def get_trainer_configs(
     layer: str,
     submodule_name: str,
     steps: int,
+    target_l0s: list[int] = None,
     warmup_steps: int = WARMUP_STEPS,
     sparsity_warmup_steps: int = SPARSITY_WARMUP_STEPS,
     decay_start_fraction=DECAY_START_FRACTION,
@@ -333,7 +326,7 @@ def get_trainer_configs(
 
     if TrainerType.TOP_K.value in architectures:
         for seed, dict_size, learning_rate, k in itertools.product(
-            seeds, dict_sizes, learning_rates, TARGET_L0s
+            seeds, dict_sizes, learning_rates, target_l0s
         ):
             config = TopKTrainerConfig(
                 **base_config,
@@ -350,7 +343,7 @@ def get_trainer_configs(
 
     if TrainerType.BATCH_TOP_K.value in architectures:
         for seed, dict_size, learning_rate, k in itertools.product(
-            seeds, dict_sizes, learning_rates, TARGET_L0s
+            seeds, dict_sizes, learning_rates, target_l0s
         ):
             config = TopKTrainerConfig(
                 **base_config,
@@ -367,7 +360,7 @@ def get_trainer_configs(
 
     if TrainerType.Matryoshka_BATCH_TOP_K.value in architectures:
         for seed, dict_size, learning_rate, k in itertools.product(
-            seeds, dict_sizes, learning_rates, TARGET_L0s
+            seeds, dict_sizes, learning_rates, target_l0s
         ):
             config = MatryoshkaBatchTopKTrainerConfig(
                 **base_config,
@@ -384,7 +377,7 @@ def get_trainer_configs(
 
     if TrainerType.JUMP_RELU.value in architectures:
         for seed, dict_size, learning_rate, target_l0 in itertools.product(
-            seeds, dict_sizes, learning_rates, TARGET_L0s
+            seeds, dict_sizes, learning_rates, target_l0s
         ):
             config = JumpReluTrainerConfig(
                 **base_config,

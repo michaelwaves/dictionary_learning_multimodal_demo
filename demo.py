@@ -66,6 +66,12 @@ def get_args():
     parser.add_argument(
         "--mixed_dataset", action="store_true", help="use mixed dataset"
     )
+    parser.add_argument(
+        "--num_tokens", type=int, default=250_000_000, help="total tokens to train on"
+    )
+    parser.add_argument(
+        "--target_l0s", type=int, nargs="+", default=[80, 160], help="target L0 values for top-k / jump-relu trainers"
+    )
 
     args = parser.parse_args()
     return args
@@ -81,6 +87,7 @@ def run_sae_training(
     random_seeds: list[int],
     dictionary_widths: list[int],
     learning_rates: list[float],
+    target_l0s: list[int] = None,
     dry_run: bool = False,
     use_wandb: bool = False,
     save_checkpoints: bool = False,
@@ -187,6 +194,7 @@ def run_sae_training(
         layer,
         submodule_name,
         steps,
+        target_l0s=target_l0s,
     )
 
     print(f"len trainer configs: {len(trainer_configs)}")
@@ -336,7 +344,7 @@ if __name__ == "__main__":
     python demo.py --save_dir run3 --model_name google/gemma-2-2b --layers 12 --architectures standard top_k --use_wandb
     python demo.py --save_dir jumprelu --model_name EleutherAI/pythia-70m-deduped --layers 3 --architectures jump_relu --use_wandb
     python demo.py --save_dir gemma4 --model_name google/gemma-4-31B --layers 15 --architectures matryoshka_batch_top_k --use_wandb
-    python demo.py --save_dir gemma4 --model_name google/gemma-4-E4B --layers 21 --architectures matryoshka_batch_top_k --use_wandb
+    python demo.py --save_dir gemma4 --model_name google/gemma-4-E4B --layers 21 --architectures matryoshka_batch_top_k --use_wandb 
 
     """
     args = get_args()
@@ -359,7 +367,6 @@ if __name__ == "__main__":
     config.STREAMING_READ_RETRY_INTERVAL = 20
 
     start_time = time.time()
-
     save_dir = (
         f"{args.save_dir}_{args.model_name}_{'_'.join(args.architectures)}".replace(
             "/", "_"
@@ -373,7 +380,8 @@ if __name__ == "__main__":
             save_dir=save_dir,
             device=args.device,
             architectures=args.architectures,
-            num_tokens=demo_config.num_tokens,
+            num_tokens=args.num_tokens,
+            target_l0s=args.target_l0s,
             random_seeds=demo_config.random_seeds,
             dictionary_widths=demo_config.dictionary_widths,
             learning_rates=demo_config.learning_rates,
